@@ -103,10 +103,14 @@ pub struct Fetcher {
 }
 
 impl Fetcher {
-    /// Build the fetcher. The client reuses no default transport: a
-    /// [`guard::GuardedResolver`] vets every address at connect time, and
-    /// redirects are re-validated per hop by the policy below.
-    pub fn new(settings: FetchSettings, store: std::sync::Arc<Store>, user_agent: &str) -> Self {
+    /// Build the fetcher, failing if its guarded HTTP client cannot be built.
+    /// The client reuses no default transport: a [`guard::GuardedResolver`] vets
+    /// every address at connect time, and redirects are re-validated per hop.
+    pub fn new(
+        settings: FetchSettings,
+        store: std::sync::Arc<Store>,
+        user_agent: &str,
+    ) -> Result<Self, reqwest::Error> {
         let redirects = settings.max_redirects.max(1);
         let client = reqwest::Client::builder()
             .user_agent(user_agent.to_string())
@@ -125,17 +129,16 @@ impl Fetcher {
                 }
             }))
             .pool_idle_timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
+            .build()?;
         let permits = tokio::sync::Semaphore::new(settings.max_concurrency.max(1));
         let cache = cache::TtlCache::new(settings.cache_ttl());
-        Fetcher {
+        Ok(Fetcher {
             settings,
             client,
             store,
             cache,
             permits,
-        }
+        })
     }
 
     /// Retrieve one URL, indexing it when configured. A failure is returned, not
@@ -363,7 +366,20 @@ mod tests {
         let store = std::sync::Arc::new(
             Store::open(&dir, crate::config::IndexSettings::default()).expect("store"),
         );
-        Fetcher::new(FetchSettings::default(), store, "search-test")
+        Fetcher::new(FetchSettings::default(), store, "search-test").expect("valid test client")
+    }
+
+    #[test]
+    fn invalid_user_agent_fails_client_construction() {
+        let dir = std::env::temp_dir().join(format!("search-fetch-{}", uuid::Uuid::new_v4()));
+        let store = std::sync::Arc::new(
+            Store::open(&dir, crate::config::IndexSettings::default()).expect("store"),
+        );
+        let result = Fetcher::new(FetchSettings::default(), store, "bad\nuser-agent");
+        assert!(
+            result.is_err(),
+            "invalid user agents must not get a default client"
+        );
     }
 
     #[tokio::test]

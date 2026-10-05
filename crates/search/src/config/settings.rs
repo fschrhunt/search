@@ -116,6 +116,16 @@ impl SearchSettings {
             self.max_results
         }
     }
+
+    /// Use the configured maximum for a zero request and cap every explicit request.
+    pub fn result_limit(&self, requested: usize) -> usize {
+        let maximum = self.max_results_or_default();
+        if requested == 0 {
+            maximum
+        } else {
+            requested.min(maximum)
+        }
+    }
     pub fn max_provider_time(&self) -> Duration {
         Duration::from_millis(self.max_provider_time_ms)
     }

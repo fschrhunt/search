@@ -71,10 +71,14 @@ mod tests {
 
     #[test]
     fn a_fresh_entry_is_returned_and_expiry_clears_it() {
-        let cache = TtlCache::new(Duration::from_millis(1));
+        let cache = TtlCache::new(Duration::from_secs(60));
         cache.put("k", &fetched());
         assert!(cache.get("k").is_some());
-        std::thread::sleep(Duration::from_millis(5));
+        let mut entries = cache.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, inserted)) = entries.get_mut("k") {
+            *inserted = Instant::now() - Duration::from_secs(61);
+        }
+        drop(entries);
         assert!(cache.get("k").is_none());
     }
 }
