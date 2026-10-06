@@ -29,7 +29,7 @@ uses paired HTTPS, on loopback and remote interfaces alike. See [remote](remote.
   "dir": "/home/you/.search/data",
   "search": {
     "max_results": 10,
-    "engine_timeout": 2000,
+    "engine_timeout": 5000,
     "timeout": 8000,
     "local_weight": 1.5
   },
@@ -84,9 +84,14 @@ refresh interval makes every saved seeded page eligible for explicit refresh.
   available.
 - `engines.enabled: false` disables live engines, leaving local-index search
   available. `engines.use` selects installed package IDs; empty means none, not
-  all. The default selection is just `mwmbl`. `engines.config` holds per-engine
-  adapter overrides, separate from package files; see [engine packages](engines.md)
+  all. The default selection is just `mwmbl`; other packages run only after you
+  explicitly install and enable them. Selected engines run concurrently and their
+  results are merged, but no multi-engine setup is required. `engines.config` holds
+  per-engine adapter overrides, separate from package files; see [engine packages](engines.md)
   for installation, configuration, and the executable trust boundary.
+- The default `search.engine_timeout` is 5000 ms per engine; `search.timeout`
+  caps the whole query at 8000 ms. This leaves slower opt-in APIs more room while
+  keeping the total wait bounded.
 - `remote.timeout` sets the overall deadline for calls to the selected paired
   host. The default is 120000 milliseconds; the connection timeout stays fixed
   at 10000 milliseconds.
