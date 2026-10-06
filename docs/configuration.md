@@ -1,72 +1,93 @@
 # Configuration
 
-A JSON file at `~/.config/search/search.json`, or the path in `$SEARCH_CONFIG`.
-Fields are snake_case. Every field has a safe default, so a file names only what
-it changes; a JSON object with unknown fields is rejected, so a typo fails at
-startup rather than being ignored.
+Settings are read from `~/.config/search/settings.json`, or the file named by
+`CONFIG`. Missing explicitly selected files are errors; only an absent default
+file uses built-in settings. The file is ordinary JSON; add explanations in the
+optional `notes` object. Unknown settings fail at startup rather than being ignored.
 
 ## Environment overrides
 
-- `SEARCH_CONFIG` — the config file path.
-- `SEARCH_ADDR` — the listen address, overriding `addr`.
-- `SEARCH_DATA_DIR` — the data directory, overriding `data_dir`.
-- The variable named by `token_env` (default `SEARCH_TOKEN`) — the bearer token.
+- `CONFIG` selects the settings file.
+- `ADDRESS` overrides `address`.
+- `DIR` overrides `dir`.
 
-The token is read from the environment first, then from a literal `token` in the
-file. Prefer the environment so the file can be shared.
+Pairing credentials live in owner-only files under `dir/trust`, separate from
+settings. Local CLI and stdio MCP need no authentication. `search serve` always
+uses paired HTTPS, on loopback and remote interfaces alike. See [remote](remote.md).
 
-## Fields
+## Settings
 
 ```json
 {
-  "addr": "127.0.0.1:8642",
-  "data_dir": "~/.local/share/search",
-  "log": "info",
-  "token_env": "SEARCH_TOKEN",
+  "notes": {
+    "timeouts": "Timeout and cache_ttl numbers are milliseconds.",
+    "index.enabled": "False disables all corpus access; it does not delete existing pages."
+  },
+  "address": "127.0.0.1:8642",
+  "dir": "/home/you/.local/share/search",
   "search": {
     "max_results": 10,
-    "maxProviderTimeMs": 2000,
-    "overallTimeoutMs": 8000,
-    "cacheTtlMs": 300000
+    "provider_timeout": 2000,
+    "timeout": 8000,
+    "local_weight": 1.5
   },
   "fetch": {
-    "timeoutMs": 15000,
-    "max_bytes": 4194304,
+    "timeout": 15000,
+    "max_response_bytes": 4194304,
     "max_redirects": 5,
-    "cacheTtlMs": 600000,
-    "allow_private": false,
-    "max_concurrency": 8
+    "cache_ttl": 600000,
+    "allow_private_networks": false,
+    "max_concurrency": 8,
+    "max_stored_chars": 40000
   },
-  "engines": {
-    "enabled": ["brave", "wikipedia", "stackexchange"],
-    "key_envs": { "brave": "BRAVE_SEARCH_KEY" }
+  "index": {
+    "enabled": true,
+    "save_fetched_pages": true,
+    "include_in_search": true,
+    "max_size_mb": 512,
+    "retention_days": 180,
+    "refresh_hosts": [],
+    "refresh_interval_days": 7
+  },
+  "providers": {
+    "enabled": true,
+    "only": ["brave", "wikipedia", "stackexchange"],
+    "api": { "brave": "BRAVE_SEARCH_KEY" }
+  },
+  "remote": {
+    "timeout": 120000
   }
 }
 ```
 
-- **`addr`** — the listen address. A non-loopback address requires a token.
-- **`data_dir`** — where the SQLite index lives.
-- **`log`** — `debug`, `info`, `warn`, or `error`.
-- **`search`** — how long any one provider may take, the ceiling for the whole
-  fan-out, and how long a query answer is reused.
-- **`fetch`** — the request deadline, the response size cap, the redirect limit,
-  and how many fetches run at once. `index_fetched` defaults to true; set it
-  false to stop adding fetched pages to the corpus. `allow_private` disables the
-  SSRF guard — **tests and air-gapped mirrors only**.
-- **`engines`** — restrict to a subset of providers with `enabled` (empty means
-  every keyless provider), and name the environment variable holding a key for
-  any provider that needs one with `key_envs`.
+Timeouts and cache TTL are milliseconds; fields ending in `_days` use days.
+Omit a setting to use its built-in default. Explicit zero values are never
+replaced with defaults: `cache_ttl: 0` disables the fetch cache and
+`max_redirects: 0` follows no redirects. Deadlines, result and body limits, and
+concurrency must be positive. Zero size/retention means no pruning; a zero
+refresh interval makes every saved seeded page eligible for explicit refresh.
 
-## Providers
+- `address` is the listener address. `dir` holds the SQLite index.
+- `search.provider_timeout` limits one provider; `search.timeout` limits the
+  whole query. `max_results` caps results and `local_weight` ranks local hits.
+- `fetch.timeout` and `max_response_bytes` bound page retrieval. Set
+  `allow_private_networks` only for tests or air-gapped mirrors; it disables the
+  SSRF guard.
+- `index.enabled: false` disables all database access, including explicit index
+  commands, without creating, opening, pruning, or deleting the corpus. HTTPS
+  device credentials remain separate and are still stored when hosting/pairing.
+- `index.save_fetched_pages` controls local storage, and
+  `index.include_in_search` controls blending local hits into web results.
+  Disabling either does not delete existing pages; explicit index search remains
+  available.
+- `providers.enabled: false` disables live web providers, leaving local-index
+  search available. `providers.only` optionally restricts providers; an empty
+  list enables all when `enabled` is true. `providers.api` maps provider names to environment-variable names
+  for API keys. The current built-in providers are keyless; configuring `api`
+  does not switch them to an authenticated API.
+- `remote.timeout` sets the overall deadline for calls to the selected paired
+  host. The default is 120000 milliseconds; the connection timeout stays fixed
+  at 10000 milliseconds.
 
-Every provider runs without a key by default:
-
-| Name | What it is |
-| --- | --- |
-| `brave` | A general web index, the primary English result source |
-| `marginalia` | An independent index that favors non-commercial pages |
-| `mwmbl` | A community-crawled index |
-| `wikipedia` | Entities and concepts |
-| `hackernews` | Developer and startup discussion |
-| `stackexchange` | Concrete programming questions |
-| `arxiv` | Research preprints |
+`dir` expands a leading `~/` using `HOME`. The old `directory`,
+`token`, and `token_env` fields are rejected, with no compatibility aliases.

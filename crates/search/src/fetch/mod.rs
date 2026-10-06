@@ -3,8 +3,8 @@
 //! Because URLs are model-chosen, every request is treated as hostile:
 //! destinations are resolved and refused if they point inside the network, each
 //! redirect hop is re-checked, bodies are size-capped, and deadlines are
-//! enforced. Every successfully fetched page is indexed, so the private corpus
-//! grows from real use rather than from crawling.
+//! enforced. When saving is enabled, successful pages join the server-local
+//! corpus, which grows from use rather than background crawling.
 
 mod cache;
 mod extract;
@@ -17,30 +17,35 @@ use crate::index::{self, Store};
 
 pub use guard::{is_public_ip, GuardError};
 
-/// The most client-side redirects followed before giving up, so a loop of
-/// redirect stubs cannot spin the fetcher.
-const MAX_REDIRECT_HOPS: usize = 3;
-
 /// Decide whether to follow a client-side redirect target. The target came from
 /// an untrusted page, so it is accepted only when it is a well-formed http(s)
 /// URL that passes the SSRF guard, does not loop, and is within the hop budget.
 /// Returns the URL to fetch next, or `None` to stop.
-fn follow_target(next: &str, current: &str, hops: usize, allow_private: bool) -> Option<String> {
-    if hops > MAX_REDIRECT_HOPS || next == current {
+fn follow_target(
+    next: &str,
+    current: &str,
+    hops: usize,
+    max_hops: usize,
+    allow_private_networks: bool,
+) -> Option<String> {
+    if hops > max_hops || next == current {
         return None;
     }
     let parsed = url::Url::parse(next).ok()?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return None;
     }
-    guard::check_host(parsed.host_str().unwrap_or(""), allow_private).ok()?;
+    guard::check_host(parsed.host_str().unwrap_or(""), allow_private_networks).ok()?;
     Some(next.to_string())
 }
 
 /// The outcome of one fetch.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Fetched {
     pub url: String,
+    /// Unix timestamp when Search fetched this page; retained for cache hits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fetched_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_url: Option<String>,
     pub status: u16,
@@ -96,8 +101,9 @@ impl FetchError {
 /// Holds the guarded client, the settings, and the index.
 pub struct Fetcher {
     settings: FetchSettings,
+    save_fetched_pages: bool,
     client: reqwest::Client,
-    store: std::sync::Arc<Store>,
+    store: Option<std::sync::Arc<Store>>,
     cache: cache::TtlCache,
     permits: tokio::sync::Semaphore,
 }
@@ -108,10 +114,11 @@ impl Fetcher {
     /// every address at connect time, and redirects are re-validated per hop.
     pub fn new(
         settings: FetchSettings,
-        store: std::sync::Arc<Store>,
+        save_fetched_pages: bool,
+        store: Option<std::sync::Arc<Store>>,
         user_agent: &str,
     ) -> Result<Self, reqwest::Error> {
-        let redirects = settings.max_redirects.max(1);
+        let redirects = settings.max_redirects;
         let client = reqwest::Client::builder()
             .user_agent(user_agent.to_string())
             .timeout(settings.timeout())
@@ -119,10 +126,10 @@ impl Fetcher {
             // The resolver is the trust boundary: it refuses a private address
             // even if a name's answer changed since `check_host` ran.
             .dns_resolver(std::sync::Arc::new(guard::GuardedResolver::new(
-                settings.allow_private,
+                settings.allow_private_networks,
             )))
             .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-                if attempt.previous().len() >= redirects {
+                if attempt.previous().len() > redirects {
                     attempt.error("too many redirects")
                 } else {
                     attempt.follow()
@@ -134,6 +141,7 @@ impl Fetcher {
         let cache = cache::TtlCache::new(settings.cache_ttl());
         Ok(Fetcher {
             settings,
+            save_fetched_pages,
             client,
             store,
             cache,
@@ -158,7 +166,13 @@ impl Fetcher {
                 return Ok(fetched);
             };
             hops += 1;
-            match follow_target(&next, &target, hops, self.settings.allow_private) {
+            match follow_target(
+                &next,
+                &target,
+                hops,
+                self.settings.max_redirects,
+                self.settings.allow_private_networks,
+            ) {
                 Some(next) => {
                     target = next;
                 }
@@ -175,8 +189,11 @@ impl Fetcher {
         if parsed.scheme() != "http" && parsed.scheme() != "https" {
             return Err(FetchError::Scheme);
         }
-        guard::check_host(parsed.host_str().unwrap_or(""), self.settings.allow_private)
-            .map_err(|e| FetchError::Refused(e.message()))?;
+        guard::check_host(
+            parsed.host_str().unwrap_or(""),
+            self.settings.allow_private_networks,
+        )
+        .map_err(|e| FetchError::Refused(e.message()))?;
 
         if let Some(cached) = self.cache.get(raw) {
             return Ok(cached);
@@ -207,7 +224,7 @@ impl Fetcher {
             return Err(FetchError::Status(status.as_u16()));
         }
 
-        let (body, truncated) = read_capped(response, self.settings.max_bytes)
+        let (body, truncated) = read_capped(response, self.settings.max_response_bytes)
             .await
             .map_err(FetchError::Network)?;
 
@@ -238,21 +255,23 @@ impl Fetcher {
         }
         let text = page.text;
 
+        let fetched_at = now_unix();
         let mut indexed = None;
-        if self.settings.should_index() {
-            let stored = index::cap_chars(&text, self.settings.index_text_chars.max(1));
+        if let Some(store) = self.store.as_ref().filter(|_| self.save_fetched_pages) {
+            let stored = index::cap_chars(&text, self.settings.max_stored_chars.max(1));
             let doc = index::Doc {
                 url: final_url.clone(),
                 title: page.title.clone(),
                 text: stored,
                 host: index::host_of(&final_url),
-                fetched_at: now_unix(),
+                fetched_at,
             };
-            indexed = Some(self.store.put(&doc).is_ok());
+            indexed = Some(store.put(&doc).is_ok());
         }
 
         let fetched = Fetched {
             url: raw.to_string(),
+            fetched_at: Some(fetched_at),
             final_url: Some(final_url),
             status: status.as_u16(),
             content_type,
@@ -284,6 +303,7 @@ impl Fetcher {
                 Ok(fetched) => fetched,
                 Err(error) => Fetched {
                     url: url.clone(),
+                    fetched_at: None,
                     final_url: None,
                     status: 0,
                     content_type: String::new(),
@@ -366,7 +386,8 @@ mod tests {
         let store = std::sync::Arc::new(
             Store::open(&dir, crate::config::IndexSettings::default()).expect("store"),
         );
-        Fetcher::new(FetchSettings::default(), store, "search-test").expect("valid test client")
+        Fetcher::new(FetchSettings::default(), true, Some(store), "search-test")
+            .expect("valid test client")
     }
 
     #[test]
@@ -375,7 +396,12 @@ mod tests {
         let store = std::sync::Arc::new(
             Store::open(&dir, crate::config::IndexSettings::default()).expect("store"),
         );
-        let result = Fetcher::new(FetchSettings::default(), store, "bad\nuser-agent");
+        let result = Fetcher::new(
+            FetchSettings::default(),
+            true,
+            Some(store),
+            "bad\nuser-agent",
+        );
         assert!(
             result.is_err(),
             "invalid user agents must not get a default client"
@@ -415,7 +441,7 @@ mod tests {
         let current = "https://example.com/a";
         // A public http(s) target is followed, bounded by the hop budget.
         assert_eq!(
-            follow_target("https://example.com/b", current, 1, false).as_deref(),
+            follow_target("https://example.com/b", current, 1, 3, false).as_deref(),
             Some("https://example.com/b")
         );
         // Private destinations are refused.
@@ -426,23 +452,29 @@ mod tests {
             "http://localhost/",
             "http://[64:ff9b::a9fe:a9fe]/",
         ] {
-            assert_eq!(follow_target(private, current, 1, false), None, "{private}");
+            assert_eq!(
+                follow_target(private, current, 1, 3, false),
+                None,
+                "{private}"
+            );
         }
         // A non-http scheme is refused.
-        assert_eq!(follow_target("file:///etc/passwd", current, 1, false), None);
+        assert_eq!(
+            follow_target("file:///etc/passwd", current, 1, 3, false),
+            None
+        );
         // A loop back to where we are is refused.
-        assert_eq!(follow_target(current, current, 1, false), None);
+        assert_eq!(follow_target(current, current, 1, 3, false), None);
         // Past the hop budget, nothing more is followed.
         assert_eq!(
-            follow_target(
-                "https://example.com/c",
-                current,
-                MAX_REDIRECT_HOPS + 1,
-                false
-            ),
+            follow_target("https://example.com/c", current, 4, 3, false),
             None
         );
         // The guard's escape hatch, used only by tests and mirrors.
-        assert!(follow_target("http://127.0.0.1/", current, 1, true).is_some());
+        assert!(follow_target("http://127.0.0.1/", current, 1, 3, true).is_some());
+        assert_eq!(
+            follow_target("https://example.com/b", current, 1, 0, false),
+            None
+        );
     }
 }

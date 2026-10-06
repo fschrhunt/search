@@ -22,7 +22,7 @@ A URL is model-chosen, so the fetcher assumes it is hostile:
   inside the network.
 - **Bodies are size-capped** and **requests carry a deadline**.
 
-The one escape hatch, `allow_private`, disables the guard for tests and
+The one escape hatch, `allow_private_networks`, disables the guard for tests and
 air-gapped mirrors. Never set it on a reachable service.
 
 ## Untrusted content
@@ -35,16 +35,26 @@ positioning — and neutralizes links and images, so page content cannot form a
 markdown image that exfiltrates. The remaining text is passed to the model as
 data, in a clearly delimited field.
 
-The strongest defense is architectural: search reads pages and returns text. It
-holds no private data and cannot itself send anything onward, so the "lethal
-trifecta" of private data, untrusted content, and external communication is not
-complete inside it.
+Search holds a private corpus and can fetch public pages. Paired devices are
+trusted with that corpus and with initiating those fetches; extracted content
+still must be treated as data by the consuming model.
 
 ## Authentication
 
-Every HTTP request carries a bearer token, compared in constant time. This
-includes the MCP endpoint. A server with no configured token denies everything,
-and the binary refuses to bind a non-loopback address without one.
+Every execution request, including MCP, requires a revocable per-device secret
+on HTTPS. The host stores only SHA-256 hashes and compares them with `subtle`.
+The one-use pairing code expires after 15 minutes and locks after 20 attempts.
+`search pair-code` renews it locally without restarting the host. Only the code
+hash is stored, with expiry, consumed state and failed attempts, under the same
+cross-process lock used for admission. Consumption commits before a device is
+issued; renewal invalidates earlier codes. Clock rollback before code creation
+fails closed.
+Clients verify the public certificate fingerprint before transmitting the code.
+TLS checks the exact leaf certificate pin and delegates chain, hostname, expiry,
+and handshake signatures to Rustls WebPKI; no insecure certificate acceptance
+is used. Credential-bearing clients refuse redirects, proxies and plaintext.
+Browser Origin headers are refused. Trust files are owner-only and separate
+from settings; a corrupt registry fails closed. See [remote](remote.md).
 
 The MCP transport also validates the inbound `Host` header, to prevent DNS
 rebinding against a locally running server, so a deployment names the authority
@@ -57,6 +67,5 @@ FTS operators in user input cannot inject syntax.
 
 ## What is not a vulnerability
 
-See `SECURITY.md`: the plaintext-over-a-private-network default, a provider's
-accuracy, the absence of a rate limit, and `allow_private` reaching private
+See `SECURITY.md`: a provider's accuracy, execution requests without a global rate limit, and `allow_private_networks` reaching private
 addresses are all by design.

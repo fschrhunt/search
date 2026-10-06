@@ -15,8 +15,9 @@ pub enum Command {
     /// Serve the JSON API and MCP over HTTP.
     Serve {
         config: Option<String>,
-        addr: Option<String>,
-        data_dir: Option<String>,
+        address: Option<String>,
+        hostname: Option<String>,
+        dir: Option<String>,
     },
     /// Search the web, printing results for a person or JSON for a script.
     Search {
@@ -34,7 +35,7 @@ pub enum Command {
         json: bool,
         config: Option<String>,
     },
-    /// Search only the local corpus.
+    /// Search only the selected corpus.
     Index {
         query: String,
         limit: usize,
@@ -43,6 +44,12 @@ pub enum Command {
     },
     /// Refresh stale documents on configured index hosts.
     Refresh { config: Option<String> },
+    /// Manage paired hosts or devices on this host.
+    Remote {
+        action: String,
+        args: Vec<String>,
+        config: Option<String>,
+    },
     /// Print the version.
     Version,
     /// Print usage.
@@ -67,8 +74,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
             let flags = parse_serve_flags(args)?;
             Ok(Command::Serve {
                 config: flags.config,
-                addr: flags.addr,
-                data_dir: flags.data_dir,
+                address: flags.address,
+                hostname: flags.hostname,
+                dir: flags.dir,
             })
         }
         Some("fetch") => {
@@ -83,6 +91,28 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
             let _ = args.next();
             Ok(Command::Refresh {
                 config: parse_config_flag(args)?,
+            })
+        }
+        Some("remote") | Some("devices") | Some("revoke") | Some("pair-code") => {
+            let verb = args.next().ok_or("missing command")?;
+            let action = if verb == "remote" {
+                args.next().ok_or("missing remote command")?
+            } else {
+                verb
+            };
+            let mut config = None;
+            let mut values = Vec::new();
+            while let Some(value) = args.next() {
+                if value == "--config" || value == "-config" {
+                    config = Some(args.next().ok_or("missing config path")?);
+                } else {
+                    values.push(value);
+                }
+            }
+            Ok(Command::Remote {
+                action,
+                args: values,
+                config,
             })
         }
         Some("version") | Some("--version") | Some("-version") => Ok(Command::Version),
@@ -105,17 +135,28 @@ pub fn usage() -> &'static str {
 Usage:
   search QUERY [flags]         search the web and print results
   search fetch URL... [flags]  read pages as clean text
-  search index QUERY [flags]   search only the local corpus
+  search index QUERY [flags]   search only the selected corpus
   search refresh [flags]       refresh stale configured index hosts
   search serve [flags]         serve the JSON API and MCP over HTTP
   search                       serve MCP over stdio (what an agent spawns)
+  search remote pair NAME HTTPS_URL CERT_FILE SHA256  pair (code from stdin)
+  search remote use/list/off/remove [NAME]  choose the execution target
+  search pair-code             renew the host pairing code without restarting
+  search devices               list devices paired with this host
+  search revoke DEVICE_ID      revoke a device on this host
   search version               print the version
+
+Serve flags:
+  -address HOST:PORT   paired HTTPS listener (default 127.0.0.1:8642)
+  -hostname NAME      certificate name clients connect to (for wildcard binds)
+  -dir PATH           local corpus and private trust storage
+  -config PATH        local settings
 
 Search flags:
   -limit N       results to return (default 10)
   -json          print JSON instead of text
   -providers A,B restrict to these providers
-  -config PATH   JSON config (default $SEARCH_CONFIG or ~/.config/search/search.json)
+  -config PATH   settings file (default $CONFIG or ~/.config/search/settings.json)
 
 Fetch flags:
   -query TEXT        return only the passages matching TEXT
@@ -267,10 +308,10 @@ fn parse_serve_flags<I: IntoIterator<Item = String>>(args: I) -> Result<ServeFla
             "-config" | "--config" => {
                 flags.config = Some(args.next().ok_or("missing value for -config")?)
             }
-            "-addr" | "--addr" => flags.addr = Some(args.next().ok_or("missing value for -addr")?),
-            "-data" | "--data" => {
-                flags.data_dir = Some(args.next().ok_or("missing value for -data")?)
+            "-address" | "--address" => {
+                flags.address = Some(args.next().ok_or("missing value for -address")?)
             }
+            "-dir" | "--dir" => flags.dir = Some(args.next().ok_or("missing value for -dir")?),
             other => return Err(format!("unknown flag {other:?}")),
         }
     }
@@ -281,8 +322,9 @@ fn parse_serve_flags<I: IntoIterator<Item = String>>(args: I) -> Result<ServeFla
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ServeFlags {
     pub config: Option<String>,
-    pub addr: Option<String>,
-    pub data_dir: Option<String>,
+    pub address: Option<String>,
+    pub hostname: Option<String>,
+    pub dir: Option<String>,
 }
 
 #[cfg(test)]
@@ -315,11 +357,12 @@ mod tests {
     #[test]
     fn serve_reads_its_flags() {
         assert_eq!(
-            parse(args(&["serve", "-addr", "0.0.0.0:1", "-data", "/tmp/x"])).unwrap(),
+            parse(args(&["serve", "-address", "0.0.0.0:1", "-dir", "/tmp/x",])).unwrap(),
             Command::Serve {
                 config: None,
-                addr: Some("0.0.0.0:1".into()),
-                data_dir: Some("/tmp/x".into()),
+                address: Some("0.0.0.0:1".into()),
+                hostname: None,
+                dir: Some("/tmp/x".into()),
             }
         );
     }
@@ -341,9 +384,9 @@ mod tests {
     #[test]
     fn a_lone_flag_defaults_to_stdio() {
         assert_eq!(
-            parse(args(&["-config", "/etc/search.json"])).unwrap(),
+            parse(args(&["-config", "/etc/settings.json"])).unwrap(),
             Command::Stdio {
-                config: Some("/etc/search.json".into())
+                config: Some("/etc/settings.json".into())
             }
         );
     }

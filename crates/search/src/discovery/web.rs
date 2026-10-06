@@ -12,7 +12,7 @@ use std::time::Duration;
 use super::parse;
 use super::{Finding, Provider, ProviderError, ProviderFuture};
 
-/// A browser user agent, sent deliberately. Several engines answer a non-browser
+/// A browser user agent, sent deliberately. Several providers answer a non-browser
 /// client with a challenge or a 403, so search presents the same fingerprint a
 /// browser would. It is a known cost of scraping; the alternative is not to use
 /// those providers at all.
@@ -105,7 +105,8 @@ fn parse_brave(html: &str, limit: usize) -> Vec<Finding> {
             title,
             url,
             snippet,
-            providers: vec!["brave"],
+            providers: vec!["brave".into()],
+            fetched_at: None,
             score: 0.0,
         });
         if out.len() >= limit {
@@ -156,7 +157,8 @@ fn parse_marginalia(html: &str, limit: usize) -> Vec<Finding> {
             title,
             url,
             snippet: None,
-            providers: vec!["marginalia"],
+            providers: vec!["marginalia".into()],
+            fetched_at: None,
             score: 0.0,
         });
         if out.len() >= limit {
@@ -217,7 +219,8 @@ fn parse_mwmbl(body: &str, limit: usize) -> Result<Vec<Finding>, ProviderError> 
                     .unwrap_or_default(),
                 url,
                 snippet: row.extract.first().map(|f| f.value.clone()),
-                providers: vec!["mwmbl"],
+                providers: vec!["mwmbl".into()],
+                fetched_at: None,
                 score: 0.0,
             })
         })
@@ -277,7 +280,8 @@ fn parse_wikipedia(body: &str, limit: usize) -> Result<Vec<Finding>, ProviderErr
                 hit.title.replace(' ', "_")
             ),
             snippet: Some(parse::strip_tags(&hit.snippet)),
-            providers: vec!["wikipedia"],
+            providers: vec!["wikipedia".into()],
+            fetched_at: None,
             score: 0.0,
         })
         .take(limit)
@@ -342,7 +346,8 @@ fn parse_hn(body: &str, limit: usize) -> Result<Vec<Finding>, ProviderError> {
                 title,
                 url,
                 snippet: Some(parse::strip_tags(&hit.story_text)).filter(|s| !s.is_empty()),
-                providers: vec!["hackernews"],
+                providers: vec!["hackernews".into()],
+                fetched_at: None,
                 score: 0.0,
             })
         })
@@ -396,7 +401,8 @@ fn parse_stackexchange(body: &str, limit: usize) -> Result<Vec<Finding>, Provide
                 &parse::strip_tags(&item.body_markdown),
                 300,
             )),
-            providers: vec!["stackexchange"],
+            providers: vec!["stackexchange".into()],
+            fetched_at: None,
             score: 0.0,
         })
         .take(limit)
@@ -440,7 +446,8 @@ fn parse_arxiv(body: &str, limit: usize) -> Vec<Finding> {
                 &collapse(&first_element(entry, "summary")),
                 300,
             )),
-            providers: vec!["arxiv"],
+            providers: vec!["arxiv".into()],
+            fetched_at: None,
             score: 0.0,
         });
         if out.len() >= limit {

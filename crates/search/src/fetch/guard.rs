@@ -32,7 +32,7 @@ impl std::error::Error for GuardError {}
 /// Hostnames that are local by name and must never be dialed.
 const LOCAL_SUFFIXES: &[&str] = &[".localhost", ".local", ".internal", ".home.arpa"];
 
-/// Refuse a host that is local by name or by address. `allow_private` disables
+/// Refuse a host that is local by name or by address. `allow_private_networks` disables
 /// the check only for tests and air-gapped mirrors; it is never the default.
 ///
 /// `url::Url::host_str()` returns a bracketed IPv6 literal (`[::1]`), so the
@@ -41,8 +41,8 @@ const LOCAL_SUFFIXES: &[&str] = &[".localhost", ".local", ".internal", ".home.ar
 ///
 /// This checks the literal the URL names. A hostname is only fully vetted when
 /// [`GuardedResolver`] resolves it, which the fetcher installs on its client.
-pub fn check_host(host: &str, allow_private: bool) -> Result<(), GuardError> {
-    if allow_private {
+pub fn check_host(host: &str, allow_private_networks: bool) -> Result<(), GuardError> {
+    if allow_private_networks {
         return Ok(());
     }
     let host = host.trim_end_matches('.').to_ascii_lowercase();
@@ -70,13 +70,13 @@ pub fn check_host(host: &str, allow_private: bool) -> Result<(), GuardError> {
 pub fn allowed_addresses(
     name: &str,
     addresses: impl IntoIterator<Item = IpAddr>,
-    allow_private: bool,
+    allow_private_networks: bool,
 ) -> Result<Vec<SocketAddr>, GuardError> {
     let mut allowed = Vec::new();
     let mut any = false;
     for ip in addresses {
         any = true;
-        if !allow_private && !is_public_ip(ip) {
+        if !allow_private_networks && !is_public_ip(ip) {
             return Err(GuardError(format!(
                 "refusing {name}: resolves to private {ip}"
             )));
@@ -93,29 +93,31 @@ pub fn allowed_addresses(
 /// closes DNS rebinding: the address the socket is opened to is the one that
 /// passed [`allowed_addresses`], never a fresh, unchecked resolution.
 pub struct GuardedResolver {
-    allow_private: bool,
+    allow_private_networks: bool,
 }
 
 impl GuardedResolver {
-    pub fn new(allow_private: bool) -> Self {
-        GuardedResolver { allow_private }
+    pub fn new(allow_private_networks: bool) -> Self {
+        GuardedResolver {
+            allow_private_networks,
+        }
     }
 }
 
 impl reqwest::dns::Resolve for GuardedResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let allow_private = self.allow_private;
+        let allow_private_networks = self.allow_private_networks;
         let host = name.as_str().to_string();
         Box::pin(async move {
             // The system resolver is the trust root; we only filter its answers.
             let resolved = tokio::net::lookup_host((host.as_str(), 0)).await;
             let addresses: Vec<IpAddr> = match resolved {
-                Ok(addresses) => addresses.map(|addr| addr.ip()).collect(),
+                Ok(addresses) => addresses.map(|address| address.ip()).collect(),
                 Err(error) => {
                     return Err(Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
                 }
             };
-            match allowed_addresses(&host, addresses, allow_private) {
+            match allowed_addresses(&host, addresses, allow_private_networks) {
                 Ok(allowed) => {
                     let iter: reqwest::dns::Addrs = Box::new(allowed.into_iter());
                     Ok(iter)
@@ -311,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn allow_private_disables_the_guard_only_when_asked() {
+    fn allow_private_networks_disables_the_guard_only_when_asked() {
         assert!(check_host("127.0.0.1", true).is_ok());
         assert!(check_host("localhost", true).is_ok());
     }

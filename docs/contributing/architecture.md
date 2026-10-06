@@ -22,11 +22,22 @@ crates/search/  the engine (`search`)
 crates/mcp/   the MCP tools and transports (`search_mcp`)
   lib.rs        tool definitions and stdio transport
   http.rs       streamable HTTP transport
+  backend.rs    exclusive local/remote execution and verified TLS leaf pinning
 crates/cli/   the command and HTTP API package (`cli`; binary `search`)
   args.rs       the command line
   run.rs        dispatch, and build the service with overrides
-  http.rs       the JSON API, the router, and the auth middleware
+  http.rs       paired HTTPS, JSON API and per-request device authentication
+  trust.rs      persistent identity, bounded pairing and private trust files
+  remote.rs     local profile selection, device listing and revocation
 ```
+
+The engine stays in-process and protocol-free. CLI and stdio MCP share the
+adapter's `Backend`: a selected remote is checked before opening any local
+engine, and failures never trigger local execution. The host always opens its
+local engine. Pairing verifies a copied public certificate's fingerprint before
+sending the one-use code; TLS enforces the exact leaf pin plus standard WebPKI
+validation. Host trust stores hashes, client trust stores secrets, and neither
+belongs in engine settings. See [remote hosting](../remote.md).
 
 ## The rules
 

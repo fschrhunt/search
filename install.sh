@@ -97,4 +97,4 @@ case ":$PATH:" in
   *) echo "Add $dir to your PATH, for example in ~/.zshrc or ~/.bashrc:"
      echo "  export PATH=\"$dir:\$PATH\"" ;;
 esac
-echo "Next: export SEARCH_TOKEN=\$(openssl rand -hex 32), then search serve"
+echo "Next: search serve (paired HTTPS), or search QUERY (local CLI)"

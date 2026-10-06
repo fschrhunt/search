@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 
-use super::defaults;
 use super::Config;
 
 /// A configuration problem an operator must fix. It carries a message, not a
@@ -31,69 +30,78 @@ impl std::error::Error for ConfigError {}
 /// Load configuration from `path` (or the configured default), apply defaults
 /// and environment overrides, and validate the result.
 pub fn load(path: Option<PathBuf>) -> Result<Config, ConfigError> {
-    let path = path
-        .or_else(|| std::env::var_os("SEARCH_CONFIG").map(PathBuf::from))
-        .or_else(default_path);
-
-    let mut config = match &path {
-        Some(path) if path.exists() => {
-            let text = std::fs::read_to_string(path)
-                .map_err(|e| ConfigError::new(format!("read {}: {e}", path.display())))?;
-            serde_json::from_str::<Config>(&text)
-                .map_err(|e| ConfigError::new(format!("parse {}: {e}", path.display())))?
-        }
-        _ => Config::default(),
-    };
-    defaults::fill(&mut config);
+    let explicit = path.or_else(|| std::env::var_os("CONFIG").map(PathBuf::from));
+    let mut config = read(explicit.clone().or_else(default_path), explicit.is_some())?;
     apply_env(&mut config);
+    config.dir = expand_home(&config.dir, std::env::var_os("HOME").map(PathBuf::from))?;
     config.validate()?;
     Ok(config)
 }
 
-/// The standard location: `$XDG_CONFIG_HOME/search/search.json` or
-/// `~/.config/search/search.json`.
+/// Only an absent implicit default file means built-in defaults.
+fn read(path: Option<PathBuf>, explicit: bool) -> Result<Config, ConfigError> {
+    let Some(path) = path else {
+        return Ok(Config::default());
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if !explicit && error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Config::default())
+        }
+        Err(error) => {
+            return Err(ConfigError::new(format!(
+                "read {}: {error}",
+                path.display()
+            )))
+        }
+    };
+    serde_json::from_str(&text)
+        .map_err(|error| ConfigError::new(format!("parse {}: {error}", path.display())))
+}
+
+/// Expand only a leading home component, not shell variables or other users' homes.
+fn expand_home(path: &std::path::Path, home: Option<PathBuf>) -> Result<PathBuf, ConfigError> {
+    match path.strip_prefix("~") {
+        Ok(rest) => home
+            .map(|home| home.join(rest))
+            .ok_or_else(|| ConfigError::new("dir uses ~ but HOME is not set")),
+        Err(_) => Ok(path.to_path_buf()),
+    }
+}
+
+/// The standard location: `$XDG_CONFIG_HOME/search/settings.json` or
+/// `~/.config/search/settings.json`.
 fn default_path() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        return Some(PathBuf::from(xdg).join("search").join("search.json"));
+        return Some(PathBuf::from(xdg).join("search").join("settings.json"));
     }
     std::env::var_os("HOME").map(|home| {
         PathBuf::from(home)
             .join(".config")
             .join("search")
-            .join("search.json")
+            .join("settings.json")
     })
 }
 
 /// Environment variables win over the file for the fields that name a place to
 /// bind or store.
 fn apply_env(config: &mut Config) {
-    if let Ok(addr) = std::env::var("SEARCH_ADDR") {
-        if !addr.is_empty() {
-            config.addr = addr;
+    if let Ok(address) = std::env::var("ADDRESS") {
+        if !address.is_empty() {
+            config.address = address;
         }
     }
-    if let Ok(dir) = std::env::var("SEARCH_DATA_DIR") {
+    if let Ok(dir) = std::env::var("DIR") {
         if !dir.is_empty() {
-            config.data_dir = PathBuf::from(dir);
+            config.dir = PathBuf::from(dir);
         }
     }
 }
 
 impl Config {
-    /// Resolve the token: the environment first, then a literal in the file.
-    /// `None` when neither is set.
-    pub fn resolved_token(&self) -> Option<String> {
-        if let Ok(value) = std::env::var(&self.token_env) {
-            if !value.is_empty() {
-                return Some(value);
-            }
-        }
-        self.token.clone().filter(|t| !t.is_empty())
-    }
-
     /// Resolve a provider key from its configured environment variable.
     pub fn resolved_key(&self, provider: &str) -> Option<String> {
-        let var = self.engines.key_envs.get(provider)?;
+        let var = self.providers.api.get(provider)?;
         std::env::var(var).ok().filter(|v| !v.is_empty())
     }
 
@@ -101,7 +109,7 @@ impl Config {
     /// `:port` (which binds every interface and is therefore NOT loopback), and
     /// `localhost:port`.
     pub fn is_loopback(&self) -> bool {
-        match self.addr.rsplit_once(':') {
+        match self.address.rsplit_once(':') {
             Some((host, _)) => match host {
                 "" => false,
                 "localhost" => true,
@@ -111,42 +119,50 @@ impl Config {
                     .parse::<std::net::IpAddr>()
                     .map(|ip| ip.is_loopback())
                     // A hostname that is not an IP literal: treat as non-loopback,
-                    // which fails safe by requiring a token.
+                    // the frontend must secure every listener.
                     .unwrap_or(false),
             },
             None => false,
         }
     }
 
-    /// Reject settings that would be unsafe or nonsensical: a non-loopback bind
-    /// needs a token, and a token must be long enough to mean anything.
+    /// Reject malformed listeners and unusable bounds; authentication belongs to adapters.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if !valid_addr(&self.addr) {
+        if !valid_address(&self.address) {
             return Err(ConfigError::new(format!(
-                "addr {:?} is not host:port",
-                self.addr
+                "address {:?} is not host:port",
+                self.address
             )));
         }
-        let token = self.resolved_token();
-        if !self.is_loopback() && token.is_none() {
-            return Err(ConfigError::new(format!(
-                "addr {:?} is not loopback; a token is required",
-                self.addr
-            )));
-        }
-        if let Some(token) = token {
-            if token.len() < 16 {
-                return Err(ConfigError::new("token must be at least 16 characters"));
+        for (name, value) in [
+            ("search.max_results", self.search.max_results as u64),
+            ("search.provider_timeout", self.search.provider_timeout),
+            ("search.timeout", self.search.timeout),
+            ("fetch.timeout", self.fetch.timeout),
+            ("fetch.max_response_bytes", self.fetch.max_response_bytes),
+            ("fetch.max_concurrency", self.fetch.max_concurrency as u64),
+            ("fetch.max_stored_chars", self.fetch.max_stored_chars as u64),
+            ("remote.timeout", self.remote.timeout),
+        ] {
+            if value == 0 {
+                return Err(ConfigError::new(format!(
+                    "{name} must be greater than zero"
+                )));
             }
+        }
+        if !self.search.local_weight.is_finite() || self.search.local_weight <= 0.0 {
+            return Err(ConfigError::new(
+                "search.local_weight must be finite and positive",
+            ));
         }
         Ok(())
     }
 }
 
-/// Whether `addr` is a bindable `host:port`, accepting an empty host (`:8642`)
+/// Whether `address` is a bindable `host:port`, accepting an empty host (`:8642`)
 /// and a bracketed IPv6 literal.
-fn valid_addr(addr: &str) -> bool {
-    let Some((host, port)) = addr.rsplit_once(':') else {
+fn valid_address(address: &str) -> bool {
+    let Some((host, port)) = address.rsplit_once(':') else {
         return false;
     };
     if port.is_empty() || port.parse::<u16>().is_err() {
@@ -174,60 +190,111 @@ fn is_hostname(host: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn explicit_missing_settings_fail_instead_of_enabling_defaults() {
+        let path = std::env::temp_dir().join(format!("search-missing-{}", uuid::Uuid::new_v4()));
+        assert!(read(Some(path.clone()), true).is_err());
+        assert!(read(Some(path), false).is_ok());
+    }
+
+    #[test]
+    fn home_expansion_is_limited_to_a_leading_component() {
+        let home = Some(PathBuf::from("/home/example"));
+        assert_eq!(
+            expand_home(std::path::Path::new("~/.local/share/search"), home.clone()).unwrap(),
+            PathBuf::from("/home/example/.local/share/search")
+        );
+        assert_eq!(
+            expand_home(std::path::Path::new("~other/search"), home).unwrap(),
+            PathBuf::from("~other/search")
+        );
+        assert!(expand_home(std::path::Path::new("~/search"), None).is_err());
+    }
+
+    #[test]
+    fn explicit_zero_switches_survive_deserialization() {
+        let config: Config = serde_json::from_str(
+            r#"{"fetch":{"cache_ttl":0,"max_redirects":0},"index":{"refresh_interval_days":0}}"#,
+        )
+        .unwrap();
+        assert!(config.validate().is_ok());
+        assert_eq!(config.fetch.cache_ttl, 0);
+        assert_eq!(config.fetch.max_redirects, 0);
+        assert_eq!(config.index.refresh_after(), std::time::Duration::ZERO);
+        let bad: Config = serde_json::from_str(r#"{"fetch":{"timeout":0}}"#).unwrap();
+        assert!(bad.validate().is_err());
+    }
+
     /// The parsed loopback check must not mistake `:8642` — which binds every
     /// interface — for loopback.
     #[test]
     fn all_interfaces_is_not_loopback() {
-        for addr in [":8642", "0.0.0.0:8642", "[::]:8642", "100.1.2.3:8642"] {
+        for address in [":8642", "0.0.0.0:8642", "[::]:8642", "100.1.2.3:8642"] {
             let config = Config {
-                addr: addr.into(),
+                address: address.into(),
                 ..Config::default()
             };
-            assert!(!config.is_loopback(), "{addr} should not be loopback");
+            assert!(!config.is_loopback(), "{address} should not be loopback");
         }
-        for addr in ["127.0.0.1:8642", "[::1]:8642", "localhost:8642"] {
+        for address in ["127.0.0.1:8642", "[::1]:8642", "localhost:8642"] {
             let config = Config {
-                addr: addr.into(),
+                address: address.into(),
                 ..Config::default()
             };
-            assert!(config.is_loopback(), "{addr} should be loopback");
-        }
-    }
-
-    /// A non-loopback bind without a token must be refused.
-    #[test]
-    fn non_loopback_requires_a_token() {
-        for addr in [":8642", "0.0.0.0:8642", "[::]:8642"] {
-            let mut config = Config {
-                addr: addr.into(),
-                ..Config::default()
-            };
-            config.token = None;
-            config.token_env = "SEARCH_TEST_UNSET_TOKEN".into();
-            assert!(config.validate().is_err(), "{addr} should require a token");
-            config.token = Some("a-sufficiently-long-token".into());
-            assert!(config.validate().is_ok(), "{addr} with a token should pass");
+            assert!(config.is_loopback(), "{address} should be loopback");
         }
     }
 
     #[test]
-    fn malformed_addr_is_rejected() {
+    fn malformed_address_is_rejected() {
         let config = Config {
-            addr: "not-an-address".into(),
-            token: Some("a-sufficiently-long-token".into()),
+            address: "not-an-address".into(),
             ..Config::default()
         };
         assert!(config.validate().is_err());
     }
 
+    /// Removed credential and location names must not silently load defaults.
     #[test]
-    fn short_tokens_are_rejected() {
-        let config = Config {
-            addr: "127.0.0.1:8642".into(),
-            token: Some("short".into()),
-            token_env: "SEARCH_TEST_UNSET_TOKEN".into(),
-            ..Config::default()
-        };
-        assert!(config.validate().is_err());
+    fn legacy_settings_are_rejected() {
+        for field in ["directory", "token", "token_env"] {
+            let json = serde_json::json!({field: "old"});
+            assert!(serde_json::from_value::<Config>(json).is_err());
+        }
+        assert!(serde_json::from_str::<Config>(r#"{"dir":"/tmp/search"}"#).is_ok());
+    }
+
+    #[test]
+    fn settings_json_uses_clean_names() {
+        let config = serde_json::from_str::<Config>(
+            r#"{"notes":{"search.timeout":"milliseconds"},"search":{"timeout":5000},"index":{"include_in_search":false,"save_fetched_pages":false},"providers":{"only":["brave"],"api":{"brave":"BRAVE_KEY"}}}"#,
+        )
+        .ok();
+        assert_eq!(
+            config.map(|c| (
+                c.index.should_include_in_search(),
+                c.index.should_save_fetched_pages(),
+                c.search.timeout,
+                c.providers.only,
+                c.providers.api.get("brave").cloned(),
+            )),
+            Some((
+                false,
+                false,
+                5000,
+                vec!["brave".into()],
+                Some("BRAVE_KEY".into())
+            ))
+        );
+    }
+
+    #[test]
+    fn live_providers_can_be_disabled_and_remote_timeout_is_configurable() {
+        let config: Config =
+            serde_json::from_str(r#"{"providers":{"enabled":false},"remote":{"timeout":45000}}"#)
+                .unwrap();
+        assert!(!config.providers.enabled);
+        assert_eq!(config.remote.timeout(), std::time::Duration::from_secs(45));
+        assert!(config.validate().is_ok());
     }
 }

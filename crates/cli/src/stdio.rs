@@ -3,20 +3,20 @@
 use std::sync::Arc;
 
 use search::Search;
-use search_mcp::serve_stdio;
+use search_mcp::serve_backend;
 
-use crate::run::build_service;
+use crate::run::{build_backend, build_service};
 
 /// Serve MCP over stdin/stdout until the client disconnects.
 pub async fn serve(config_path: Option<String>) -> i32 {
-    let service = match build_service(config_path, None, None) {
+    let service = match build_backend(config_path) {
         Ok(service) => service,
         Err(message) => {
             eprintln!("search: {message}");
             return 1;
         }
     };
-    match serve_stdio(service).await {
+    match serve_backend(service).await {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("search: stdio: {error}");

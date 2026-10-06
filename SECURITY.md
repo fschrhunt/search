@@ -19,8 +19,9 @@ worth attacking:
   (including `169.254.169.254`), CGNAT, multicast, unique-local, and every IPv6
   form that embeds such an IPv4 must be refused, on the URL and on every
   redirect hop. A way to reach one is a vulnerability.
-- **Every HTTP request is authenticated.** A path that answers without the
-  configured bearer token is a vulnerability.
+- **Every execution request is authenticated over HTTPS.** An API or MCP path
+  that executes without a current paired-device credential is a vulnerability.
+  The public pairing endpoint requires a bounded, expiring one-use code.
 - **Untrusted HTML cannot crash the service or exhaust it.** A panic, an
   unbounded allocation, or an infinite loop driven by a fetched page is a
   vulnerability.
@@ -30,11 +31,11 @@ worth attacking:
 
 ## What is not a vulnerability
 
-- The plaintext-over-a-private-network default. search is meant to sit behind a
-  tailnet or a TLS proxy; `--allow-insecure` is an explicit operator choice.
+- Hosting on a private network. search is meant to sit behind a
+  tailnet; the listener itself uses paired HTTPS.
 - A provider returning wrong or stale results. Discovery borrows other indexes;
   their accuracy is their own.
 - The absence of a rate limit. search is a personal service behind a private
-  network and a shared token.
-- `allow_private: true` letting the fetcher reach private addresses. That setting
+  network and paired-device trust.
+- `fetch.allow_private_networks: true` letting the fetcher reach private addresses. That setting
   is documented as disabling the guard, for tests and air-gapped mirrors only.

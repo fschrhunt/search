@@ -27,9 +27,9 @@
   local matches with live results, so useful pages remain searchable when
   providers are unavailable. Size and age limits keep the index bounded.
 
-Index search and fetch indexing can each be switched off. Seeded hosts refresh
-only when configured, and only through the explicit refresh command—Search does
-not crawl the web on its own.
+Local search and saving fetched pages can each be switched off. Seeded hosts
+refresh only when configured, and only through the explicit refresh command—
+Search does not crawl the web on its own.
 
 ## Start
 
@@ -49,17 +49,18 @@ Search from your terminal—no server required:
 ./target/release/search index "async runtime" -json
 ```
 
-Or start the HTTP API and MCP server:
+Or host the HTTPS API and MCP server:
 
 ```sh
-export SEARCH_TOKEN="$(openssl rand -hex 32)"
 ./target/release/search serve
 ```
 
-HTTP and MCP-over-HTTP require a bearer token, even on loopback. The server
-listens on `127.0.0.1:8642` by default; Search also refuses a non-loopback bind
-without a token. Stdio MCP and one-shot CLI commands do not need one. See
-[installation](docs/install.md) for release and package-manager options.
+`search serve` creates a persistent TLS identity and prints its fingerprint and
+one-use pairing code. It listens on `127.0.0.1:8642` by default. Local CLI and
+stdio MCP work without pairing. To share one host, pair each client and select
+it with `search remote use NAME`; the same CLI and stdio tools then execute on
+that host. Remote failures are errors with no local fallback. See
+[remote hosting](docs/remote.md) and [installation](docs/install.md).
 
 ## Use it with an agent
 
@@ -76,7 +77,7 @@ With no arguments, `search` serves MCP over stdio. Add it to your MCP client:
 ```
 
 The server exposes two tools: `web_search` for discovery and `web_fetch` for
-clean, query-focused reading. For a shared server, use MCP over HTTP instead.
+clean, query-focused reading. For a shared host, select a paired remote; the agent configuration stays the same.
 
 ## One engine, more surfaces
 
@@ -94,29 +95,45 @@ configured engine with `Search::open(config)`.
 
 ## Make it yours
 
-Settings live in `~/.config/search/search.json` or the file named by
-`SEARCH_CONFIG`. Defaults are useful; turn features off or tune them as needed.
+Settings live in `~/.config/search/settings.json` or the file named by
+`CONFIG`. Defaults are useful; turn features off or tune them as needed.
 
 ```json
 {
-  "search": { "use_index": true },
-  "fetch": { "index_fetched": true, "index_text_chars": 40000 },
+  "fetch": { "max_stored_chars": 40000 },
   "index": {
+    "include_in_search": true,
+    "save_fetched_pages": true,
     "max_size_mb": 512,
-    "max_age_days": 180,
+    "retention_days": 180,
     "refresh_hosts": [],
-    "refresh_after_days": 7
+    "refresh_interval_days": 7
   }
 }
 ```
 
-Set `search.use_index` or `fetch.index_fetched` to `false` to disable that
-behavior. Set `max_size_mb` or `max_age_days` to `0` for no limit. See the full
-[configuration reference](docs/configuration.md).
+Set `index.include_in_search` or `index.save_fetched_pages` to `false` to
+disable that behavior. Set `max_size_mb` or `retention_days` to `0` for no limit.
+See the full [configuration reference](docs/configuration.md).
+
+Set `index.enabled` to `false` for no local database access at all. This leaves
+existing indexed pages untouched; paired HTTPS credentials are stored separately.
+Set `providers.enabled` to `false` to run without live web providers, or tune
+`remote.timeout` for slower paired hosts.
+
+To stop blending local pages into web results and stop saving newly fetched
+pages, set both options to `false`:
+
+```json
+{
+  "index": { "include_in_search": false, "save_fetched_pages": false }
+}
+```
 
 ## API
 
-Every HTTP request uses `Authorization: Bearer $SEARCH_TOKEN`.
+Every execution request uses a paired device credential over pinned HTTPS.
+Pairing alone is public and requires an expiring, one-use code.
 
 ```text
 GET  /healthz                 liveness

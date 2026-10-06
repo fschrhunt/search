@@ -9,3 +9,6 @@ pub mod stdio;
 
 /// The product version, for `search version` and the MCP server info.
 pub use search::VERSION;
+
+pub mod remote;
+pub mod trust;

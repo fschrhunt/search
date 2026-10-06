@@ -56,7 +56,7 @@ class Search < Formula
 
   def caveats
     <<~EOS
-      Next: export SEARCH_TOKEN="$(openssl rand -hex 32)", then search serve
+      Next: search serve (paired HTTPS), or search QUERY (local CLI)
     EOS
   end
 
