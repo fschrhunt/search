@@ -1,71 +1,37 @@
 # Engine packages
 
-Search runs installed engine packages, not a hardcoded set of engine implementations.
-Maintained packages live in [`crates/engines`](../crates/engines); users can install
-them or create packages using the same manifest and execution contract. No Rust
-rebuild, database registration, or plugin marketplace account is needed.
+Search ships **Mwmbl**, the keyless default, and **SearXNG**, for connecting your
+own instance. Other services use custom packages with the same version-1 contract,
+installation store, configuration, and runtime. No Rust rebuild or Search SDK is
+needed. JSON describes the package; executable implementations can use any language.
 
-**JSON is the manifest format, not the implementation language.** HTTP packages
-can be entirely declarative. Executable packages can use Python, JavaScript, Rust,
-or any program that reads/writes the JSON protocol below. There is no required
-Search SDK. Keep package metadata declarative so inspection never executes code.
+## Connect SearXNG
 
-The distribution includes one ready-to-use default: **Mwmbl**, a keyless independent
-web index. Its coverage differs from commercial engines. Keyless does not mean
-unlimited service capacity or guaranteed availability. Search imposes no subscription
-quota, but upstream services may impose limits. SearXNG is optional, not the default.
-
-## Available, installed, enabled
+Your instance must allow JSON output. Set its full search URL:
 
 ```sh
-search engines available
-search engines install searxng
-search engines configure searxng url http://127.0.0.1:8080/search
-search engines configure searxng allow_private_networks true
-search engines test searxng "rust async"
-search engines enable searxng
-search engines list
+search install searxng
+search configure searxng url http://127.0.0.1:8080/search
+search configure searxng allow_private_networks true
+search test searxng "rust async"
+search enable searxng
 ```
 
-`available` shows the maintained catalog shipped with this Search version. `install`
-copies a package into `~/.search/engines/NAME`; it **does not enable it**. `configure`
-stores user overrides in settings, not package files. `test` explicitly executes one
-engine without opening the index. `enable` adds it to the search selection. Executable
-engines require an explicit trust decision before activation; agents can use `--trust`.
+The private-network setting permits this adapter to reach a local instance; it
+does not change page-fetching permissions. For a public endpoint, use its HTTPS
+URL and omit that setting. Search does not install or host SearXNG, bypass upstream
+restrictions, or make an instance unlimited.
 
-All package management and diagnostics are **local**, even with a selected remote.
-Install engines on the hosting machine; paired clients cannot install programs or
-change the host's package configuration through the execution API.
+## Custom engines
 
-Mwmbl's embedded default package can be used without materializing package files.
-It follows the same HTTP adapter contract as installed packages. To make it an
-ordinary managed installation, run `search engines install mwmbl`.
+Choose the smallest transport that fits:
 
-```sh
-search engines disable mwmbl
-search engines update searxng
-search engines remove searxng
-```
+| Service | Package |
+| --- | --- |
+| GET API returning JSON | An `engine.json` with field mappings, as below |
+| JSON POST, signed requests, AI APIs, or custom parsing | A command program; start with the [JSON POST example](../examples/engines/json-post) |
 
-Disable removes an engine from selection without uninstalling it. Remove disables
-and uninstalls it, preserving user configuration. Updates use the catalog included
-in the installed Search binary: upgrade Search to obtain newer maintained packages,
-then explicitly update the desired packages. There are no background downloads or
-arbitrary installation hooks. Modified and local packages are not silently
-overwritten by catalog updates.
-
-## Package layout
-
-```text
-my-engine/
-  engine.json
-  adapter.py          # executable packages only
-  README.md
-  LICENSE
-```
-
-`engine.json` is declarative metadata. Inspecting, installing, and configuring a
-package never runs its code. A settings-only HTTP package can be as small as:
+For a GET API, create `my-engine/engine.json`:
 
 ```json
 {
@@ -79,99 +45,177 @@ package never runs its code. A settings-only HTTP package can be as small as:
     "query_param": "q",
     "results_pointer": "/results"
   },
-  "required": [],
   "files": []
 }
 ```
 
+Replace the placeholder URL with your service. This mapping expects a response
+such as `{"results":[{"title":"Example","url":"https://example.com/","snippet":"Summary"}]}`.
+
 ```sh
-search engines install ./my-engine
-search engines test company "query"
-search engines enable company
+search install ./my-engine
+search test company "rust async"
+search enable company
 ```
 
-Package IDs use lowercase ASCII letters, digits, hyphens, or underscores, up to
-64 characters; `index` is reserved for corpus attribution, and `mwmbl` is reserved
-for the maintained default so local code cannot shadow it implicitly. Files named in `files`
-are copied alongside the manifest. Package paths must stay inside the package;
-unsafe paths and symlinks are refused. A local installation is a snapshot.
+`my-engine` is the source directory; `company` is the manifest ID used by all
+management commands and settings. Installation copies the declared files into
+`$SEARCH_HOME/engines/company` (normally `~/.search/engines/company`); the source
+directory is not needed at runtime. There is no separate custom store,
+registration step, or implicit project discovery.
 
-Edit the source directory when developing an engine, then remove and reinstall
-the local snapshot explicitly. User configuration survives removal/reinstallation.
-Search does not install symlinks or implicitly discover project packages.
+For POST APIs, copy the [example directory](../examples/engines/json-post) to
+`my-engine` and adapt `engine.py` for your service. Keep the manifest ID `json-post`
+for these commands, or replace it consistently with your own ID:
 
-## JSON HTTP adapters
-
-HTTP adapters issue GET requests. `query_param` defaults to `q`; optional
-`limit_param` names the count parameter. `params` adds constant parameters and
-overrides matching endpoint parameters; the current query and limit override both.
-Query text is encoded as data, never interpolated into a command or URL template.
-Unrelated repeated endpoint parameters are preserved.
-
-`results_pointer` selects the result array (default `/results`). `title_pointer`,
-`url_pointer`, and `snippet_pointer` select row fields (defaults `/title`, `/url`,
-`/snippet`). Pointers use RFC 6901 `/`-separated paths; escape `~` as `~0` and `/`
-as `~1`. An empty results pointer selects a top-level array. Snippets are optional.
-For array-valued highlighted text, `text_part_pointer` selects each fragment's
-text and joins all fragments in order. This preserves Mwmbl's complete titles and
-snippets rather than truncating them at the first highlighted segment.
-
-`headers` holds nonsecret constant headers. `header_env` maps header names to
-environment variables containing the **whole header value**, for example
-`{"Authorization":"COMPANY_SEARCH_AUTH"}`. Set that variable in the host's
-environment to `Bearer YOUR_KEY`. Missing credentials fail that engine visibly.
-Never put secrets in shareable settings or CLI configuration values. Use HTTPS
-for authenticated APIs; HTTP transmits credentials in plaintext.
-
-HTTP adapters refuse redirects and environment proxies. They check destination
-names, IP literals, and connect-time DNS through Search's SSRF guard. Private
-destinations require this adapter's explicit `allow_private_networks: true`; this
-does not change page-fetching permissions. Both transports cap output through
-`max_response_bytes` (default 1048576); oversized output fails rather than returning
-partially parsed results. Body contents, credential values, and program stderr
-are not exposed in engine failure responses.
-
-SearXNG's maintained package uses this transport and requires its own endpoint.
-The instance must enable JSON output. Connecting to SearXNG does not install or
-host SearXNG, bypass upstream restrictions, or make a public instance unlimited.
-Other maintained scraping packages carry their own setup and maintenance caveats.
-
-## Executable adapters
-
-A package can instead declare:
-
-```json
-{
-  "schema_version": 1,
-  "id": "company",
-  "version": "1.0.0",
-  "description": "Search a custom company service",
-  "adapter": {
-    "type": "command",
-    "command": "python3",
-    "args": ["-S", "-B", "adapter.py"],
-    "env": ["COMPANY_SEARCH_KEY"],
-    "config": { "endpoint": "https://search.example.com/" }
-  },
-  "files": ["adapter.py"],
-  "requires": ["python3"]
-}
+```sh
+search install ./my-engine
+search configure json-post config '{"endpoint":"https://example.com/search","timeout":30}'
+export SEARCH_API_KEY=... # supply the real key through your host's secret manager
+search test json-post "rust async"
+search enable json-post --trust
 ```
 
-Search executes it from the installed package directory, without a shell. Arguments
-are literal: `$VARIABLE`, `~`, and query placeholders are not expanded. The child
-gets a minimal runtime environment plus explicitly declared `env` variables, not
-the host's entire credential environment. A declared missing variable is a visible
-failure. Runtime requirements such as Python must already be installed; Search
-does not run dependency installers or modify global language environments.
-Packages may declare `requires` executable names for nonexecuting setup checks.
-Native entry points must be declared in `executables` as well as `files`; only
-those declared assets receive owner execute permission during installation.
+Replace the endpoint placeholder before testing. Python 3 is required only by this
+example. Its mappings are illustrative, not a universal AI API schema; see
+[how to adapt it](#adapting-the-json-post-example). Slower services may also need
+the [Search deadlines](#operations-and-troubleshooting) raised before testing.
+Return source links and useful snippets/highlights, rather than final answer prose;
+`web_fetch` remains the clean full-page reader. Search handles concurrent execution,
+deadlines, output validation, URL deduplication, ranking, and per-engine failures.
+Enable multiple packages to merge results, or restrict a query with `-engines A,B`.
 
-Search writes one JSON request to stdin and closes it:
+## Commands and configuration
+
+```sh
+search help
+search version
+search engines available
+search engines list
+search configure company
+```
+
+`available` shows the catalog shipped with your Search version. `list` inspects
+installed packages, selection, missing runtimes, and missing credential variable
+names without executing code. Mwmbl works from its embedded HTTP package without
+writing package files; `search install mwmbl` makes it a managed installation.
+
+| Command | Effect |
+| --- | --- |
+| `search install ID\|./PATH` | Copy a catalog or local package; does not enable it |
+| `search configure ID [KEY VALUE]` | Inspect required setup, or store an adapter override |
+| `search test ID QUERY` | Explicitly execute one engine independently of selection |
+| `search enable ID [--trust]` | Add to search selection; commands require a trust decision |
+| `search disable ID` | Deselect without uninstalling |
+| `search update ID` | Update from the catalog in the current Search binary |
+| `search remove ID` | Disable and uninstall; retain per-engine configuration |
+
+`search engines ACTION` accepts the management commands above as aliases.
+All management and diagnostics run **locally**, even with a selected remote.
+Install and configure engines on the hosting machine; paired clients cannot
+install programs or change host package settings through the execution API.
+
+Configuration values are JSON when parseable, otherwise strings. Overrides in
+`engines.config.ID` replace direct adapter fields **shallowly**: setting an object
+replaces that entire object. They cannot change the transport type or package
+working directory. Never pass secrets as configuration values.
+
+```sh
+search configure company header_env '{"Authorization":"COMPANY_SEARCH_AUTH"}'
+search test company -- "-site:example.com rust"
+```
+
+Set `COMPANY_SEARCH_AUTH` in the host environment to the whole header value,
+such as `Bearer YOUR_KEY`, using your secret manager. Command packages declare
+credential variable names in `adapter.env` and read them from their environment.
+Missing declared credentials fail visibly. Never embed keys in manifests,
+shareable settings, or command-line values. Use HTTPS for authenticated APIs.
+
+`engines.use` selects packages; an empty array selects none.
+`engines.enabled: false` globally disables live engines, and `enable` does not
+change that switch. Use `-config PATH` for a settings file; `SEARCH_HOME` selects
+the package/settings/trust root independently. Selecting a settings file does not
+trust packages beside it.
+
+## Package reference
+
+A package contains `engine.json` and any declared assets. Inspection,
+installation, and configuration never run package code.
+
+| Manifest field | Contract |
+| --- | --- |
+| `schema_version` | `1`, the manifest contract version |
+| `id` | 1–64 lowercase ASCII letters, digits, hyphens, or underscores |
+| `version` | Nonempty package version, independent of Search's version |
+| `description` | Package description |
+| `adapter` | Transport configuration with `type: "http"` or `"command"` |
+| `required` | Direct adapter fields that must be populated before execution; defaults to `[]` |
+| `files` | Assets to copy; `engine.json` is automatic; defaults to `[]` |
+| `executables` | Declared files that receive owner execute permission; defaults to `[]` |
+| `requires` | Runtime executable names to check without running them; defaults to `[]` |
+
+Declare every asset, including a README or license if present. Paths must stay
+inside the package; unsafe paths, undeclared files/directories, and symlinks are
+refused. `mwmbl` is reserved so local code cannot shadow the implicit default.
+A local installation is a snapshot, not a development link.
+
+### JSON HTTP adapters
+
+HTTP adapters issue GET requests. Query text is encoded as data, never interpolated
+into commands or URL templates.
+
+| Adapter field | Meaning / default |
+| --- | --- |
+| `url` | Absolute HTTP(S) endpoint without credentials or fragment |
+| `query_param` | Query parameter name; `q` |
+| `limit_param` | Optional count parameter, distinct from `query_param` |
+| `params` | Constant query parameters; `{}` |
+| `results_pointer` | Result array; `/results`; `""` selects a top-level array |
+| `title_pointer`, `url_pointer`, `snippet_pointer` | Row fields; `/title`, `/url`, `/snippet` |
+| `text_part_pointer` | Optional text field within each fragment of an array-valued title/snippet; fragments join in order |
+| `headers` | Nonsecret constant headers; `{}` |
+| `header_env` | Header names mapped to environment variable names containing whole header values; `{}` |
+| `allow_private_networks` | Permit private destinations for this adapter; `false` |
+| `max_response_bytes` | Response body cap; 1048576 bytes |
+
+Pointers follow RFC 6901: `/` separates paths, `~0` escapes `~`, and `~1`
+escapes `/`. Snippets are optional. `params` overrides matching endpoint
+parameters; the current query and limit override both. Unrelated repeated endpoint
+parameters are preserved.
+
+HTTP adapters refuse redirects and environment proxies. Search's SSRF guard checks
+destination names, IP literals, and connect-time DNS. Oversized bodies fail rather
+than yielding partially parsed results. Failure responses do not expose body
+contents or credential values.
+
+### Executable adapters
+
+The [POST starter manifest](../examples/engines/json-post/engine.json) shows a
+Python command package. Its `adapter` fields are:
+
+| Adapter field | Meaning / default |
+| --- | --- |
+| `command` | Executable to run, without a shell |
+| `args` | Literal arguments; `[]` |
+| `env` | Credential environment variable names to pass; `[]` |
+| `config` | Nonsecret object delivered in the stdin request; `{}` |
+| `max_response_bytes` | Stdout answer cap; 1048576 bytes |
+
+Search runs the program from the installed package directory. Arguments do not
+expand `$VARIABLE`, `~`, or query placeholders. The child receives a minimal
+runtime environment plus declared `env` variables, rather than the host's full
+credential environment. Runtimes and dependencies must already be installed;
+Search runs no dependency installers or installation hooks.
+
+For another language, change the command, arguments, assets, and runtime names.
+A Node program uses `command: "node"` and `requires: ["node"]`. A native binary
+can use `command: "./adapter"`, `files: ["adapter"]`, and
+`executables: ["adapter"]`; supply a binary for the host OS and architecture.
+
+Search writes one request to stdin and closes it:
 
 ```json
-{"version":1,"query":"rust async","limit":10,"config":{"endpoint":"https://search.example.com/"}}
+{"version":1,"query":"rust async","limit":10,"config":{"endpoint":"https://example.com/search"}}
 ```
 
 `config` is omitted when empty. The program writes one JSON answer and exits zero:
@@ -180,106 +224,95 @@ Search writes one JSON request to stdin and closes it:
 {"results":[{"title":"Example","url":"https://example.com/","snippet":"Optional summary"}]}
 ```
 
-Every result needs a nonempty title and absolute HTTP(S) URL without credentials.
-Search assigns provenance, ranking, and capture-time metadata; packages cannot
-forge another engine's attribution. Empty results are successful. Invalid JSON,
-invalid rows, oversized output, and nonzero exit are engine failures. Stdout is
-reserved for the answer; stderr is discarded to prevent accidental secret exposure.
+Every row needs a nonempty title and absolute HTTP(S) URL without credentials.
+Search assigns engine attribution and ranking; packages cannot forge attribution.
+Empty results are successful. Invalid JSON or rows, oversized output, and nonzero
+exit are failures. Reserve stdout for the answer; Search discards stderr to prevent
+accidental secret exposure.
 
-**Executable engines are trusted host code, not sandboxed plugins.** They run as
-the host user, can read that user's files and access the network, and can be triggered
-by paired clients after activation. An environment allowlist reduces accidental
-credential exposure but is not filesystem isolation. Cancellation kills the direct
-child; engines must clean up their own descendants and external work. Never install
-or activate code automatically from a fetched page or search result.
+**Executable engines are trusted host code, not sandboxed plugins.** Review code
+before `search test`, which explicitly executes it, and before activation.
+`search enable ID --trust` acknowledges trust; interactive activation can prompt.
+Programs run as the host user, can read that user's files and access the network,
+and can be triggered by paired clients after activation. The environment allowlist
+is not filesystem isolation, and Search's HTTP SSRF guard does not cover command
+network requests. Cancellation kills the direct child; programs must clean up
+their descendants and external work. Never install or activate code automatically
+from fetched pages or search results. Browser/scraping engines require ongoing
+maintenance and must respect upstream access policies.
 
-### Build your first executable engine
+### Adapting the JSON POST example
 
-Create an ordinary directory `my-engine` containing these two files. This offline
-starter verifies packaging and the protocol; it does not pretend to search the web.
-Replace its result construction with your API integration after the first test.
+In [`engine.py`](../examples/engines/json-post/engine.py), change `payload()` to
+your vendor's request schema and `normalize()` to its result shape. Map excerpts
+or highlights to `snippet`, joining arrays as appropriate for that API. Supply a
+nonempty title; the URL is a useful fallback when the vendor returns a null title.
+The starter expects `{"results":[...]}` and sends a Bearer header; change the
+header if your API uses `x-api-key` or another authentication scheme.
 
-`my-engine/engine.json`:
+Keep nonsecret defaults in `adapter.config` and declare credential variable names
+in `adapter.env`. The example requires HTTPS without embedded credentials, refuses
+redirects and proxies, bounds reads, and emits a redacted failure. Preserve these
+protections as you adapt it, and test mappings against saved responses.
+
+Its `config.timeout` is a network timeout in seconds (default 30, up to 120).
+`config.max_response_bytes` caps the upstream body (default 1048576, allowed range
+1024–8388608). These are example-specific program settings. The outer
+`adapter.max_response_bytes` separately caps stdout read by Search; the example
+also limits its own stdin and stdout to 1048576 bytes. Raising the upstream cap
+does not raise either output cap or Search's deadlines.
+
+## Compatibility across Search updates
+
+Manifest `schema_version: 1` and command request `version: 1` are stable across
+Search releases, independently of the package's own `version`. Updates must
+preserve version-1 field meanings, HTTP mappings, stdin/stdout shapes, package
+working directory, and declared credential/config delivery. Incompatible changes
+require a new contract version with continued version-1 support.
+
+Upgrading Search does not replace installed engines, rewrite settings, or change
+credentials. Catalog updates are separate, explicit `search update ID` operations:
+upgrade Search to obtain newer maintained packages, then update the packages you
+choose. Updates refuse edited or active packages. There are no background downloads.
+
+Local packages cannot be updated from the catalog, even if their ID matches an
+entry. To replace a local snapshot, edit its source, stop processes using it, then
+explicitly remove and reinstall it; per-engine settings survive. Previously
+installed vendor/scraper packages omitted from the current catalog remain untouched
+and usable, but must be maintained as custom packages.
+
+New security restrictions may reject unsafe packages; exceptions require release
+notes and migration guidance. Runtime availability, upstream API changes, and
+service credentials remain the engine author's responsibility.
+
+## Operations and troubleshooting
+
+Restart long-running hosts and stdio sessions after changing packages, selection,
+configuration, or process credentials. Update/remove refuse packages held by a
+running Search process; stop it first.
+
+The default engine deadline is two seconds and the overall search deadline is
+eight seconds. For slower APIs, merge this into your [settings](configuration.md):
 
 ```json
-{
-  "schema_version": 1,
-  "id": "my-engine",
-  "version": "1.0.0",
-  "description": "Offline executable adapter starter",
-  "adapter": {
-    "type": "command",
-    "command": "python3",
-    "args": ["-S", "-B", "adapter.py"]
-  },
-  "files": ["adapter.py"],
-  "requires": ["python3"]
-}
+{"search":{"engine_timeout":30000,"timeout":35000}}
 ```
 
-`my-engine/adapter.py`:
+These values are milliseconds. A command's network timeout cannot extend Search's
+deadlines; the POST example's `config.timeout` is in seconds. On remote setups,
+credentials must be available to the hosting process.
 
-```python
-"""Offline protocol starter: read one request and return at most its requested limit."""
-import json
-import sys
+| Symptom | Check / fix |
+| --- | --- |
+| Missing package or required field | Run `search engines list` and `search configure ID`; install or supply the named field |
+| Missing runtime or credential | Install the declared runtime or set the named variable in the host environment; restart the host |
+| SearXNG returns HTML or access denied | Check the full `/search` URL and instance JSON-output/access settings |
+| Private destination refused | For an intended private HTTP engine, set its `allow_private_networks` to `true` |
+| Timeout | Check upstream latency and both Search deadlines; also check the command's own network timeout |
+| Invalid or oversized answer | Verify field mappings, titles, HTTP(S) URLs, JSON-only stdout, and the relevant response cap |
+| Enabled engine absent from searches | Check `engines.enabled`, selection, query `-engines`, and restart existing sessions |
+| Busy or edited package on update | Stop processes holding it; preserve source edits before explicit removal/reinstallation |
 
-request = json.load(sys.stdin)
-if request.get("version") != 1:
-    sys.exit(1)
-results = [{
-    "title": "Starter result for " + request["query"],
-    "url": "https://example.com/",
-    "snippet": "Replace this offline result with your search integration."
-}]
-json.dump({"results": results[:request["limit"]]}, sys.stdout)
-```
-
-With Python 3 installed:
-
-```sh
-search engines install ./my-engine
-search engines list
-search engines test my-engine "hello world"
-search engines enable my-engine --trust
-```
-
-`list` diagnoses missing declared runtimes and credentials without running code.
-`test` is explicit execution; installation alone never activates this package.
-For credentials, declare variable names in `adapter.env` and read them from your
-program's environment; never embed values in the manifest. For nonsecret setup,
-put defaults in `adapter.config` and read the request's optional `config` object.
-
-To use another language, replace the command, arguments, declared files, and
-runtime names—not the protocol. For example, a Node program uses `command: "node"`
-and `requires: ["node"]`; a self-contained native binary can use `command: "./adapter"`,
-`files: ["adapter"]`, and `executables: ["adapter"]` without an interpreter runtime.
-Provide binaries for the host's OS/architecture. External dependencies remain the
-engine author's setup responsibility; Search never runs installation hooks.
-
-## Configuration and diagnostics
-
-`engines.use` selects packages; an empty array selects none. `engines.enabled: false`
-globally disables live engines. Per-engine `engines.config` objects shallowly
-override adapter fields; an override cannot change the adapter transport type.
-Missing fields listed in a package's `required` array prevent its execution.
-
-Use `search engines configure NAME` to inspect setup requirements. To replace a
-whole object field, pass JSON as the value, for example:
-
-```sh
-search engines configure company header_env '{"Authorization":"COMPANY_SEARCH_AUTH"}'
-search engines test company -- "-site:example.com rust"
-```
-
-Use `-config PATH` to select a settings file. `SEARCH_HOME` selects the package,
-data, and trust root independently; choosing a settings file does not implicitly
-trust packages next to it. Restart long-running hosts and stdio sessions after
-package, selection, or configuration changes. Updating/removing a package used by
-a running Search process refuses with a busy error; stop that process first.
-
-When asking a coding agent to add an engine, provide this contract and a maintained
-package as a starting point. Ask it to build against offline fixtures, declare
-credentials explicitly, and show you the package before installation/activation.
-Prefer supported APIs. Scraping/browser packages need ongoing maintenance and
-must respect upstream access policies.
+Develop custom mappings against saved responses before live testing. The
+[engine README](../engines/README.md) documents private-store internals for
+contributors.

@@ -10,12 +10,12 @@ fail=0
 say() { printf '%s\n' "$*"; }
 bad() { fail=1; say "FAIL: $*"; }
 
-# The shipped Rust sources: everything under a crate's src, minus test modules.
+# The shipped Rust sources: everything under src, minus test modules.
 # A `#[cfg(test)]` module is the last item in a file, so truncating at the first
 # marker removes it. Without this, test fixtures trip boundaries meant for the
 # shipped binary.
 prod_sources() {
-    find crates -path '*/src/*.rs' -o -path '*/src/*/*.rs' 2>/dev/null
+    find src -type f -name '*.rs'
 }
 
 # 1. Network surface. Search talks to installed engine packages and the pages a
@@ -24,12 +24,12 @@ prod_sources() {
 #    packages are deliberately trusted host programs, not sandboxed. Hosts
 #    named only in a comment (a doc example, an injection illustration) are not
 #    call sites and are skipped.
-allowed_hosts="index.crates.io crates.io static.crates.io search.brave.com old-search.marginalia.nu api.mwmbl.org en.wikipedia.org hn.algolia.com news.ycombinator.com api.stackexchange.com export.arxiv.org duckduckgo.com html.duckduckgo.com example.com example.invalid localhost 127.0.0.1 0.0.0.0 github.com"
+allowed_hosts="index.crates.io crates.io static.crates.io api.mwmbl.org example.com example.invalid localhost 127.0.0.1 0.0.0.0 github.com"
 found_hosts=$(
     for f in $(prod_sources); do
         awk '/^#\[cfg\(test\)\]/ { exit } /^[[:space:]]*(\/\/|\*)/ { next } { print }' "$f"
     done
-    for package in crates/engines/*; do
+    for package in engines/*; do
         [ -f "$package/engine.json" ] || continue
         for f in "$package/engine.json" "$package"/*.py; do
             [ ! -f "$f" ] || cat "$f"
@@ -71,18 +71,18 @@ done
 
 # 3. The SSRF guard must exist and deny the metadata address. Removing or
 #    weakening it is the one change this file exists to catch.
-guard=crates/search/src/fetch/guard.rs
+guard=src/core/fetch/guard.rs
 [ -f "$guard" ] || bad "the SSRF guard file $guard is missing"
 grep -q "169.254" "$guard" || bad "the SSRF guard no longer covers link-local metadata"
 grep -q "fn is_public_ip" "$guard" || bad "the SSRF guard's is_public_ip is gone"
 grep -q "metadata.google.internal" "$guard" || bad "the SSRF guard no longer refuses the metadata hostname"
 
 # 4. The fetcher must call the guard before dialing.
-grep -q "guard::check_host" crates/search/src/fetch/mod.rs || bad "the fetcher no longer calls the SSRF guard"
+grep -q "guard::check_host" src/core/fetch/mod.rs || bad "the fetcher no longer calls the SSRF guard"
 
 # Custom HTTP destinations are operator-configured but still guarded by default.
 # Commands are trusted host code; direct children must die when a query is cancelled.
-adapters=crates/search/src/discovery/adapters.rs
+adapters=src/engines/adapter.rs
 [ -f "$adapters" ] || bad "custom engine adapter implementation is missing"
 grep -q 'check_host' "$adapters" || bad "custom HTTP adapters no longer check destination hosts"
 grep -q 'GuardedResolver' "$adapters" || bad "custom HTTP adapters no longer guard DNS at dial time"
@@ -90,13 +90,13 @@ grep -q 'Policy::none()' "$adapters" || bad "custom HTTP adapters may follow red
 grep -q 'no_proxy()' "$adapters" || bad "custom HTTP adapters may use environment proxies"
 grep -q 'kill_on_drop(true)' "$adapters" || bad "cancelled executable adapters may keep running"
 grep -q 'env_clear()' "$adapters" || bad "executable engines inherit undeclared host credentials"
-[ ! -f crates/search/src/discovery/web.rs ] || bad "special built-in engine implementations remain in the core"
+[ ! -f src/engines/web.rs ] || bad "special built-in engine implementations remain in the core"
 
 # 5. Paired HTTPS must wrap execution routes, including MCP. Pairing is the
 #    only public admission; device hashes are reloaded on every request.
-http=crates/cli/src/http.rs
-trust=crates/cli/src/trust.rs
-client=crates/mcp/src/backend.rs
+http=src/cli/http.rs
+trust=src/cli/auth.rs
+client=src/client/mod.rs
 grep -q 'from_tcp_rustls' "$http" || bad "HTTPS listener is missing"
 grep -q 'middleware::from_fn_with_state' "$http" || bad "device auth layer is not mounted"
 grep -q 'host.authorized(presented)' "$http" || bad "request auth no longer checks current devices"
@@ -124,13 +124,19 @@ grep -q 'WebPkiServerVerifier::builder_with_provider' "$client" || bad "standard
 grep -q 'https_only(true)' "$client" || bad "credential client allows plaintext"
 grep -q 'redirect(reqwest::redirect::Policy::none())' "$client" || bad "credential client follows redirects"
 grep -q 'no_proxy()' "$client" || bad "credential client may use environment proxies"
-if grep -rE 'danger_accept_invalid|ServerCertVerified::assertion|HandshakeSignatureValid::assertion|resolved_token|AUTH_TOKEN|DEFAULT_TOKEN_ENV' crates/*/src; then
+if grep -rE 'danger_accept_invalid|ServerCertVerified::assertion|HandshakeSignatureValid::assertion|resolved_token|AUTH_TOKEN|DEFAULT_TOKEN_ENV' src; then
     bad "insecure TLS acceptance or legacy shared authentication is present"
 fi
 
 # Behavioral counterexamples complement these source checks in ./x check.
-[ -f crates/cli/tests/remote.rs ] || bad "offline paired-routing contract is missing"
+[ -f tests/cli/remote.rs ] || bad "offline paired-routing contract is missing"
 grep -q 'pairing_bounds_and_hash_storage' "$trust" || bad "pairing bounds counterexamples are missing"
+
+# 7. Modules replace crate boundaries, not dependency direction. Core and engines
+#    must stay independent of the CLI and protocol-facing execution adapters.
+if grep -rE 'crate::(cli|mcp|client)(::|[;{ ])' src/core src/engines; then
+    bad "core or engines depends on a frontend or protocol adapter"
+fi
 
 if [ "$fail" -eq 0 ]; then
     say "guard: ok"

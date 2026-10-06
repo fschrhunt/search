@@ -5,8 +5,21 @@ set -eu
 cd "$(dirname "$0")"
 
 usage() {
-    echo "usage: ./x [build|fmt|lint|test|check|guard|shell|serve|stdio] [args...]" >&2
-    exit 2
+    cat <<'EOF'
+Usage: ./x COMMAND [args...]
+
+  build   build the development binary
+  fmt     format Rust (add --check to inspect only)
+  lint    run Clippy with warnings denied
+  test    run package tests
+  check   format check, lint, tests, shell syntax, and security guard (default)
+  shell   check shell-script syntax
+  guard   audit the security surface
+  serve   build and run paired HTTPS hosting
+  stdio   build and run MCP over stdio
+  help    show this reference
+EOF
+    exit "${1:-2}"
 }
 
 command=${1:-check}
@@ -15,6 +28,9 @@ if [ "$#" -gt 0 ]; then
 fi
 
 case "$command" in
+    help|-h|--help)
+        usage 0
+        ;;
     build)
         cargo build --locked "$@"
         ;;
@@ -29,12 +45,16 @@ case "$command" in
         cargo clippy --locked --all-targets --all-features "$@" -- -D warnings
         ;;
     test)
-        cargo test --locked --workspace "$@"
+        cargo test --locked "$@"
         ;;
     check)
-        [ "$#" -eq 0 ] || usage
+        [ "$#" -eq 0 ] || usage >&2
         ./x fmt --check
         ./x lint
+        cargo check --locked --no-default-features
+        cargo check --locked --no-default-features --features mcp
+        cargo check --locked --no-default-features --test public_modules
+        cargo check --locked --no-default-features --features mcp --test public_modules
         ./x test
         ./x shell
         ./x guard
@@ -59,6 +79,6 @@ case "$command" in
         exec ./target/debug/search "$@"
         ;;
     *)
-        usage
+        usage >&2
         ;;
 esac

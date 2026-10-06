@@ -1,78 +1,95 @@
 # Architecture
 
-Search is a Cargo workspace with four packages. `crates/search` is the engine
-library and has no terminal, listener, or protocol dependency. `crates/cli` is
-the `search` executable and HTTP API. `crates/mcp` is the optional MCP adapter.
-Both adapters depend on `search`; the engine depends on neither. `crates/engines`
-contains package metadata, the embedded maintained catalog, and local installation;
-the core and CLI depend on it. Per-engine behavior lives in package manifests/programs,
-not Rust registrations in the core.
+Search is one root Cargo package, with library `search` (`src/lib.rs`) and
+CLI binary `search` (`src/main.rs`). There is no workspace, facade, or separate
+client/engine crate. Public APIs use the native modules:
 
-```
-crates/search/  the engine (`search`)
-  config/       the settings surface: settings.rs (the shape), defaults.rs
-                (built-in values), load.rs (read, merge, validate)
-  discovery/    the provider fan-out: mod.rs (Finding, Query, Response, the
-                Provider trait), registry.rs (parallel fan-out, per-provider
-                deadlines, reciprocal-rank fusion), adapters.rs (guarded HTTP
-                and executable engine transports)
-  fetch/        mod.rs (the guarded request, body caps, indexing), guard.rs (the
-                SSRF guard and the DNS resolver), extract.rs (HTML to text),
-                cache.rs (recent answers)
-  index/        mod.rs (Store over SQLite), schema.rs (tables, triggers, the FTS
-                query builder)
-  service.rs    the public `Search` engine and its operations
-crates/mcp/   the MCP tools and transports (`search_mcp`)
-  lib.rs        tool definitions and stdio transport
-  http.rs       streamable HTTP transport
-  backend.rs    exclusive local/remote execution and verified TLS leaf pinning
-crates/cli/   the command and HTTP API package (`cli`; binary `search`)
-  args.rs       the command line
-  run.rs        dispatch, and build the service with overrides
-  http.rs       paired HTTPS, JSON API and per-request device authentication
-  trust.rs      persistent identity, bounded pairing and private trust files
-  remote.rs     local profile selection, device listing and revocation
-  engines.rs    local package lifecycle, user settings and diagnostics
-crates/engines/  package catalog and installer (`search_engines`)
-  src/          manifests, bounded package reads, private staged writes, receipts
-  <engine>/     maintained engine.json, programs/docs and offline fixtures
-```
+| Module | Contract / source |
+| --- | --- |
+| `search::core` | Protocol-free `Search`, `Config`, `Query`, `Answer`, `Page`, `Link`; `src/core/{config,fetch,text,service}` |
+| `search::engines` | `Engine`, `Pool`, runtime adapters, manifest/catalog/install/store APIs; `src/engines/` |
+| `search::client` | `Client` for shared local/remote execution and pinned HTTPS; `src/client/mod.rs` |
+| `search::mcp` | `Server`, tools and stdio transport in `src/mcp/mod.rs`; streamable HTTP in `src/mcp/http.rs` |
+| `search::cli` | Commands and paired HTTPS host; `src/cli/{args,run,http,auth,remote,engines,..}` |
 
-The engine stays independent of frontend protocols. Its discovery adapters
-support packaged JSON HTTP APIs and a versioned JSON subprocess contract;
-the registry has no engine-specific implementations. Adapters discover URLs,
-while the fetcher reads pages and owns indexing. CLI and stdio MCP share the
-adapter's `Backend`: a selected remote is checked before opening any local
-engine, and failures never trigger local execution. The host always opens its
-local engine. Pairing verifies a copied public certificate's fingerprint before
-sending the one-use code; TLS enforces the exact leaf pin plus standard WebPKI
-validation. Host trust stores hashes, client trust stores secrets, and neither
-belongs in engine settings. See [remote hosting](../remote.md).
+Root `engines/{mwmbl,searxng}/engine.json` holds shipped declarative assets.
+Root `build.rs` embeds the catalog and release identity. Installed packages stay
+under `SEARCH_HOME/engines` (normally `~/.search/engines`). Integration fixtures
+live under `tests/{cli,engines}`; the custom starter remains at
+`examples/engines/json-post`.
 
-Packages are installed locally from the maintained catalog or an explicit package
-directory, never request input, implicit working-directory discovery, or database registration.
-`SEARCH_HOME` owns packages/settings/data/trust; `dir` overrides corpus storage only.
-Package updates do not overwrite user settings or local edits. HTTP adapters reuse
-the SSRF resolver, refuse redirects
-and proxies, and have independent explicit private-network permission. Executable
-adapters are trusted programs running as the host user; cancellation kills the
-direct child, not arbitrary descendants; only declared credentials are inherited.
-See [engine packages](../engines.md).
+## Features and dependency direction
 
-## The rules
+| Cargo features | Build |
+| --- | --- |
+| Default (`cli`) | Library and CLI binary; `cli` includes `mcp` and optional hosting/authentication dependencies |
+| `--no-default-features` | Core, engines and client library without protocol or CLI dependencies |
+| `--no-default-features --features mcp` | Library plus MCP only; `mcp` enables optional `rmcp` |
 
-- **The engine stays independent.** `search::Search` is the in-process API.
-  The CLI and MCP adapter depend on it; the engine does not depend on either.
-- **The security-critical file is `fetch/guard.rs`.** Every class of address that
-  can reach infrastructure must be classified private there, and
-  `check_host` strips IPv6 brackets before parsing. Its tests carry the
-  counterexamples; do not loosen them. `scripts/guard.sh` fails the build if the
-  guard or its call sites move.
-- **Shipped code denies panic sites.** `crates/search/src/lib.rs` denies
-  `clippy::unwrap_used`, `expect_used`, `panic`, `unreachable`, and
-  `indexing_slicing`. Every allowed site carries a `proof:` comment or a scoped
-  `#[allow]` explaining why runtime input cannot reach it.
-- **Providers are keyless by default**, and a provider's failure is reported in
-  its `ProviderState` rather than failing the query.
-- **Don't hardcode what a user might change.** A new user-facing behaviour is a
-  config field, not a constant.
+Core and engines supply discovery, fetching, configuration and package execution;
+client routes local/remote operations; MCP and CLI use these lower modules. Core
+must remain independent of MCP and CLI. The single package simplifies builds and
+removes cross-crate plumbing, but compilation no longer enforces layer boundaries.
+Module conventions and boundary tests enforce this direction instead. `./x check`
+checks all features, minimal features, and MCP-only features as well as package
+tests, formatting, linting, shell syntax and the security-surface guard.
+
+Rust import changes are breaking independently of engine compatibility. Manifest
+schema 1, command protocol 1 and on-disk formats remain unchanged; upgrading the
+binary does not replace installed engines, settings or credentials.
+
+## Core
+
+`search::core::Search` is the in-process service. Core exposes `Config`, `Query`,
+`Link`, `Answer`, and `Page`. `search::engines` defines `Engine`, `EngineState`,
+and `EngineStatus` alongside runtime and package APIs. `Pool` runs selected
+engines concurrently with per-engine and whole-query deadlines, normalizes URLs
+and merges results using reciprocal-rank fusion. `Adapter` implements the
+packaged HTTP and executable transports. `Pool` owns running adapters and package leases; HTTP engines reuse
+one client. Engine-specific behavior belongs in manifests and programs.
+
+The fetcher returns `Page`: guarded retrieval, bounded bodies, clean extraction,
+and optional passage selection. Its cache is transient and in memory. There is
+no persistent corpus, indexing, or refresh. The `core::config` module owns shareable
+settings, defaults, and validation; credentials belong to adapters and private
+trust storage. `Config` is inert data, without resolved transports or leases.
+Transport settings are `core::config::Adapter`, `core::config::Http`, and
+`core::config::Command`.
+
+User selection and attribution use `engines`; the CLI flag is `-engines`.
+Package `adapter` is a distinct transport field. For removed settings and
+commands, see the [migration guide](../configuration.md#migration).
+
+## Routing and trust
+
+CLI and stdio MCP use `search::client::Client` for exclusive local/remote execution.
+A selected remote is checked before opening a local engine; errors never trigger
+local fallback. Hosting always opens the local engine. Pairing verifies a copied
+public certificate's fingerprint before sending the one-use code. HTTPS checks
+the exact leaf pin plus standard WebPKI validation. Host trust stores credential
+hashes; client trust stores secrets. CLI identity, pairing, and credential storage
+live in `src/cli/auth.rs`; on-disk trust filenames are unchanged. See
+[remote hosting](../remote.md).
+
+Packages are installed locally from the maintained catalog or an explicit
+directory, never from request input or implicit working-directory discovery.
+`SEARCH_HOME` owns packages, settings, and private trust. Inspection never runs
+code; updates preserve user settings and refuse modified packages or active leases.
+The shipped catalog contains only Mwmbl and SearXNG. Shipped and custom packages
+share the version-1 manifest and command protocol and the same installation store.
+HTTP adapters reuse the SSRF resolver, refuse redirects and proxies, and require
+independent permission for private networks. Executable adapters are trusted host
+code; only declared credentials are inherited, and cancellation kills the direct
+child. See [engine packages](../engines.md).
+
+## Invariants
+
+- `search::core` has no frontend protocol dependency; MCP owns tools and transports.
+  Minimal library builds do not compile MCP or CLI dependencies.
+- `src/core/fetch/guard.rs` classifies infrastructure addresses as private and strips IPv6
+  brackets before parsing. Preserve its counterexample tests and guard call sites.
+- Root `src/lib.rs` denies explicit panic sites in production across its modules;
+  allowed sites need a scoped explanation or `proof:` comment.
+  `scripts/guard.sh` audits this surface.
+- Mwmbl is the single keyless default. Each `EngineState` reports an `EngineStatus`.
+- User-facing limits and enabled engines come from configuration.

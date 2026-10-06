@@ -1,86 +1,91 @@
 # Usage
 
-search is a web search service. It fans a query out to several independent
-providers, merges and reranks the results, reads pages through a hardened
-fetcher, and optionally saves pages into a server-local corpus.
+Search runs selected web engines concurrently, merges their results, and reads
+pages through a guarded fetcher. Recent pages are cached transiently in memory.
+Install Search and make it available on your `PATH` first; see
+[installation](install.md). Local commands need no server or pairing.
 
-It speaks the Model Context Protocol, so an agent uses it as two tools —
-`web_search` and `web_fetch` — and it also offers a small JSON API.
-
-## Serve MCP over stdio
-
-With no subcommand, search serves MCP over stdin/stdout. This is what an agent
-spawns:
-
-```json
-{ "mcp": { "servers": { "search": { "command": ["search"] } } } }
+```sh
+search help
+search version
+search "rust async runtime"
+search fetch https://www.rust-lang.org
+search fetch https://www.rust-lang.org -query "async"
 ```
 
-## Serve over HTTPS
+Install optional engines with `search install NAME`; see [engine packages](engines.md).
+Only Mwmbl and SearXNG ship. Before selecting SearXNG, run your own instance
+with JSON output enabled, then install, configure, and enable its package. For
+an instance already listening on `127.0.0.1:8080`:
+
+```sh
+search install searxng
+search configure searxng url http://127.0.0.1:8080/search
+search configure searxng allow_private_networks true
+search enable searxng
+search "rust async runtime" -engines mwmbl,searxng -json
+```
+
+That private-network permission applies only to the SearXNG adapter, not page
+fetching. With a selected remote, set up engines on the host instead.
+
+Command names are reserved as the first argument. Use `search -- test driven development`
+to search for words that would otherwise select a command.
+Package management and diagnostics always run locally, even with a selected remote.
+
+## MCP
+
+With no arguments, Search serves MCP over stdin/stdout. This common template
+applies to clients that accept `mcpServers`; consult your client's documentation
+for the configuration file location and schema. Ensure its process can find
+`search` on `PATH`, or replace `command` with the binary's absolute path:
+
+```json
+{ "mcpServers": { "search": { "command": "search", "args": [] } } }
+```
+
+- **`web_search`** takes one to five queries, a result limit, and an optional
+  `engines` list. It returns ranked titles, URLs, and snippets, plus each engine's
+  status, distinguishing successful empty results from failures and timeouts.
+- **`web_fetch`** takes one to ten URLs. With neither `query` nor `max_characters`,
+  it returns the full clean page under the configured fetch transport body bound
+  (`fetch.max_response_bytes`). An explicit `max_characters` must be 1–40000.
+  A `query` selects relevant passages, defaulting to 6000 characters per page
+  unless an explicit limit is supplied.
+
+Fetched pages include `fetched_at`, the Unix timestamp of Search's fetch, distinct
+from the page's publication date. Reusing a cached page retains its fetch time.
+
+## Paired HTTPS
 
 ```sh
 search serve
 ```
 
-This binds `127.0.0.1:8642` with paired HTTPS and serves the JSON API and the MCP endpoint
-(`/mcp`) on one listener. Set `address` in the config to reach it on a private
-interface such as a tailnet address. Follow [remote hosting](remote.md) to pair
-clients and route CLI and stdio MCP to the host.
+The default listener is `127.0.0.1:8642`; set `address` for a private interface.
+The JSON API and MCP endpoint share this listener. [Pair clients](remote.md) to
+route CLI and stdio MCP to the host. Remote failures are errors with no fallback.
 
-## The JSON API
+All routes below, including health, require a per-device bearer credential over
+HTTPS. Search clients pin the host certificate; `/pair` is the only public route:
 
-Execution requests carry a per-device bearer credential over pinned HTTPS.
-
-```
+```text
 GET  /healthz                 liveness
-GET  /v1/status               providers, corpus size, version
-GET  /v1/search?q=...         discover across providers
-GET  /v1/index?q=...          search only what has been fetched already
-POST /v1/fetch {"urls":[...]} read pages into text, optionally save them
-POST /v1/execute              CLI/stdio operations, including refresh
+GET  /v1/status               engines and version
+GET  /v1/search?q=...         live web search
+POST /v1/fetch {"urls":[...]} clean pages
+POST /v1/execute              CLI/stdio search and fetch operations
 POST /mcp                     MCP over streamable HTTP
 ```
 
-`GET /v1/search` also takes `limit` (1–50) and `providers` (a comma-separated
-list of provider names). Every answer reports, per provider, whether it answered,
-timed out, or failed.
+`GET /v1/search` also accepts `limit` (clamped to 1–50) and `engines`
+(comma-separated names). The host applies its engine configuration, credentials,
+and fetch policy; `search.max_results` can further cap the result count.
 
-## The MCP tools
+## Clean pages
 
-Installed engine packages on the host work through the same CLI, JSON API, and
-MCP provider selection fields. To install, configure, and diagnose packages,
-see [engine packages](engines.md); engine management always operates on the local
-machine rather than a selected remote.
-
-- **`web_search`** takes one to five queries, a result limit, and an optional
-  provider list. It returns ranked results with title, URL, and snippet. Every
-  answer reports, per provider, whether it answered, timed out, or failed.
-- **`web_fetch`** takes one to ten URLs. With a `query`, it returns only the
-  passages that match — the cheap way to read a page, and almost always what you
-  want. With `max_characters` it bounds the answer. Without a query it returns
-  the page's clean text.
-
-Search results and fetched pages include `fetched_at` when Search has a local
-copy or has fetched the page. It is a Unix timestamp for Search's fetch time,
-not the page's publication date; live-only search results omit it.
-
-When fetch indexing is enabled, reading a page stores it in the index for later
-local searches. Private and link-local addresses are refused.
-
-## What "clean" means
-
-Extraction keeps the article and drops the cruft: ads, cookie banners, related
-rails, comment sections, and visually hidden text. Links are reduced to their
-text and images to their alt text, so a fetched page cannot carry a URL that a
-client would fetch on the model's behalf. A page that exists only to redirect
-elsewhere is followed to its target.
-
-## The server-local corpus
-
-When `index.save_fetched_pages` is enabled, pages read by `web_fetch` are stored
-and full-text indexed. `GET /v1/index` searches that corpus offline. The corpus
-lives in `dir` as a SQLite database; see [configuration](configuration.md)
-to disable saving and blended local results.
-
-Paired clients share the host's corpus. Set `index.enabled` to `false` to avoid
-all database access; explicit index queries then report that it is disabled.
+Extraction removes ads, cookie banners, related rails, comment sections, and
+visually hidden text. Links become text and images become alt text, preventing
+page content from carrying active image links to a consuming client. Pages that
+only redirect elsewhere are followed through the same fetch guard. Private and
+link-local destinations are refused; see [security](security.md).

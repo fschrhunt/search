@@ -1,49 +1,77 @@
-# The workspace: every crate lives under crates/, one folder per crate.
-#
-#   search  the engine library: discovery, fetch, and its private index
-#   engines maintained engine packages and their local installer/catalog
-#   cli     the `search` executable and HTTP API
-#   mcp     the optional MCP adapter: tools and MCP transports
-#
-# The executable and protocol adapters depend on the engine; the engine never
-# depends on a frontend or protocol.
-[workspace]
-members = ["crates/search", "crates/cli", "crates/mcp", "crates/engines"]
-resolver = "2"
-
-# The application's version is the release version: the tag, `search --version`,
-# the archives, the Homebrew formula, and the install channel all come from it.
-[workspace.package]
+# One package: protocol-free core and engine packages, with optional frontends.
+[package]
+name = "search"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.98"
 license = "MIT"
 homepage = "https://github.com/fschrhunt/search"
 repository = "https://github.com/fschrhunt/search"
+description = "Self-hosted live web search and guarded page fetching"
+publish = false
 
-[workspace.dependencies]
-search = { package = "search", path = "crates/search", version = "=0.1.0" }
-search_mcp = { package = "mcp", path = "crates/mcp", version = "=0.1.0" }
-search_engines = { path = "crates/engines", version = "=0.1.0" }
+[lib]
+name = "search"
+path = "src/lib.rs"
+
+[[bin]]
+name = "search"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+cli = ["mcp", "dep:axum", "dep:axum-server", "dep:rcgen", "dep:subtle", "dep:fs2", "tokio/net", "tokio/signal"]
+mcp = ["dep:rmcp", "tokio/io-std"]
+
+[dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "process"] }
+serde_path_to_error = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "process"] }
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }
 dom_smoothie = "0.18"
 dom_query = "0.28"
-rusqlite = { version = "0.40", features = ["bundled"] }
 url = "2"
-regex = "1"
 uuid = { version = "1", features = ["v4"] }
-percent-encoding = "2"
 sha2 = "0.11"
-rmcp = { version = "3", features = ["server", "transport-io", "transport-streamable-http-server"] }
-axum = "0.8"
+libc = "0.2"
+rustls-pemfile = "2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rmcp = { version = "3", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"], optional = true }
+axum = { version = "0.8", optional = true }
+axum-server = { version = "0.8", features = ["tls-rustls-no-provider"], optional = true }
+rcgen = { version = "0.14", optional = true }
+subtle = { version = "2", optional = true }
+fs2 = { version = "0.4", optional = true }
 
-# Release builds trade build time for a small, fast binary. Unwinding stays ON:
-# a panicking handler is caught at the task boundary and reported, rather than
-# taking the process down.
+[build-dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["net"] }
+
+[[test]]
+name = "cli_engines"
+path = "tests/cli/engines.rs"
+required-features = ["cli"]
+
+[[test]]
+name = "cli_remote"
+path = "tests/cli/remote.rs"
+required-features = ["cli"]
+
+[[test]]
+name = "engines_parsers"
+path = "tests/engines/parsers.rs"
+
+[[test]]
+name = "engines_store"
+path = "tests/engines/store.rs"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
