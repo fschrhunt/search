@@ -29,3 +29,6 @@ cargo build --release
 
 The binary is `target/release/search`. The pinned toolchain in
 `rust-toolchain.toml` installs itself on the first build.
+
+Local CLI and stdio MCP work immediately without credentials. To host one
+machine for paired devices, run `search serve` and follow [remote hosting](remote.md).

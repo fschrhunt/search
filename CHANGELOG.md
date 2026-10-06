@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Add a true `index.enabled` off switch, explanatory JSON `notes`, and home-path
+  expansion. Reject missing explicit config files and invalid zero bounds;
+  zero cache/redirect settings disable those features. Bound local lookup by
+  the query deadline and require current-user ownership of trust storage.
+  Remove the unused search-cache and log-level settings rather than expose
+  switches with no effect.
+- Add `providers.enabled` for local-index-only use and configure the paired-host
+  request deadline with `remote.timeout`.
+
+- Add `search pair-code` to renew one-use host pairing codes without restarting.
+  Persist only code hashes and admission bounds under a process lock.
+
+- Replace shared HTTP tokens with persistent paired HTTPS identities and revocable
+  per-device credentials. Add `remote pair/use/list/off/remove`, `devices`, and
+  `revoke`; selected remotes execute CLI and stdio MCP operations without fallback.
+- Rename corpus settings and overrides to `dir`, `DIR`, and `-dir`; remove
+  `token`/`token_env` with no compatibility aliases.
+
+- Bound MCP fetch output by its character limit, validate tool inputs instead
+  of silently dropping them, run batch searches concurrently, and return
+  structured MCP results. Search results and fetched pages now expose when a
+  locally cached copy was fetched. Runtime settings use `settings.json` and
+  consistent snake_case names, without compatibility aliases.
 - Enforce the configured maximum result count and whole-search deadline, fail startup if the
   guarded HTTP client cannot be built, and make the fetch-cache expiry test deterministic.
 - Reshaped the workspace around the `search` engine, `cli` executable, and

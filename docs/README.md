@@ -9,6 +9,7 @@ are the long form of `search --help` and `README.md`.
 | --- | --- |
 | [Install](install.md) | Getting search, building it, and the installer |
 | [Usage](usage.md) | Running the service, the JSON API, and MCP |
+| [Remote hosting](remote.md) | Pair devices and route CLI and stdio MCP |
 | [Configuration](configuration.md) | Every setting, and the defaults |
 | [Security](security.md) | The SSRF guard, auth, and how to deploy it safely |
 

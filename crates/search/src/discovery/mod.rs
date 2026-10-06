@@ -11,21 +11,24 @@ mod web;
 pub use registry::{blend, Registry};
 
 /// One discovered page, normalized across providers.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Finding {
     pub title: String,
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    /// Unix timestamp when the local indexed copy was fetched, if present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fetched_at: Option<i64>,
     /// Every provider that returned this URL, for transparency. A list, not a
     /// joined string: a display concern must not decide a dedup comparison.
-    pub providers: Vec<&'static str>,
+    pub providers: Vec<String>,
     /// Reciprocal-rank-fusion score; higher is better.
     pub score: f64,
 }
 
 /// Which providers to use and how many results to ask each for.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Query {
     pub text: String,
     pub limit: usize,
@@ -35,7 +38,7 @@ pub struct Query {
 }
 
 /// The normalized answer the caller receives.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Response {
     pub query: String,
     pub results: Vec<Finding>,
@@ -45,7 +48,7 @@ pub struct Response {
 
 /// How one provider fared, so an agent can tell a genuinely empty result set
 /// from a provider that failed or was skipped.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProviderState {
     pub name: String,
     pub status: ProviderStatus,
@@ -56,7 +59,7 @@ pub struct ProviderState {
 }
 
 /// The outcome of one provider's query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderStatus {
     Ok,
@@ -161,7 +164,7 @@ impl std::error::Error for ProviderError {}
 /// The provider families, one constructor per file section in `web.rs` and its
 /// siblings. Kept here so the registry has one list to build from.
 pub(super) fn default_providers(
-    settings: &crate::config::EngineSettings,
+    settings: &crate::config::ProviderSettings,
 ) -> Vec<Box<dyn Provider>> {
     let providers: Vec<Box<dyn Provider>> = vec![
         Box::new(web::Brave),
@@ -178,6 +181,6 @@ pub(super) fn default_providers(
         .collect()
 }
 
-fn enabled(settings: &crate::config::EngineSettings, name: &str) -> bool {
-    settings.enabled.is_empty() || settings.enabled.iter().any(|e| e == name)
+fn enabled(settings: &crate::config::ProviderSettings, name: &str) -> bool {
+    settings.enabled && (settings.only.is_empty() || settings.only.iter().any(|e| e == name))
 }

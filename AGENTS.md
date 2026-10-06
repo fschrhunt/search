@@ -26,9 +26,9 @@ Every Rust crate is a folder under `crates/`. `cli` and `mcp` depend on the
 ```
 crates/search/  the engine library (`search`)
   config/       the settings surface: settings.rs (the shape and its invariants),
-                defaults.rs (built-in values, applied after deserialize),
-                load.rs (read, merge, validate). A token on a non-loopback bind
-                is required; the address is parsed, never string-sliced.
+                defaults.rs (built-in values for omitted fields),
+                load.rs (read, merge, validate). Credentials belong to the adapters;
+                settings remain shareable.
   discovery/    the provider fan-out: mod.rs (Finding, Query, Response, the
                 Provider trait), registry.rs (parallel fan-out, per-provider
                 deadlines, reciprocal-rank fusion, URL normalization),
@@ -40,7 +40,7 @@ crates/search/  the engine library (`search`)
                 — the security-critical file), extract/ (main-content
                 extraction, the visibility pass, passage selection),
                 cache.rs (recent answers)
-  index/        the private corpus: mod.rs (Store over rusqlite, FTS search),
+  index/        the server-local corpus: mod.rs (Store over rusqlite, FTS search),
                 schema.rs (the tables, triggers, and the FTS query builder)
   service.rs    the in-process `Search` engine and its public operations
 crates/mcp/   the optional MCP adapter (`search_mcp`)
@@ -49,7 +49,9 @@ crates/mcp/   the optional MCP adapter (`search_mcp`)
 crates/cli/   the `cli` package and `search` binary (`search_cli` library)
   args.rs       parse the command line
   run.rs        dispatch, and build the service with serve overrides
-  http.rs       the JSON API and auth middleware
+  http.rs       paired HTTPS, JSON API and device auth middleware
+  trust.rs      persistent TLS identity, pairing and private credential storage
+  remote.rs     local profile selection and device management
 scripts/guard.sh  the security-surface audit: allowed hosts, panic-site policy,
                   the SSRF guard's presence, and the auth layer
 scripts/release.sh · scripts/formula.sh · install.sh  the release path; the

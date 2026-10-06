@@ -4,12 +4,21 @@ use std::sync::Arc;
 
 use search::config;
 use search::Search;
+use search_mcp::backend::{Backend, Operation};
 
 use crate::{args::Command, http, stdio};
 
 /// Run one parsed command. Returns the process exit code.
 pub async fn execute(command: Command) -> i32 {
     match command {
+        Command::Remote {
+            action,
+            args,
+            config,
+        } => match crate::remote::command(&action, args, config).await {
+            Ok(()) => 0,
+            Err(error) => report_error(error),
+        },
         Command::Version => {
             println!("{}", search::VERSION);
             0
@@ -21,9 +30,10 @@ pub async fn execute(command: Command) -> i32 {
         Command::Stdio { config } => stdio::serve(config).await,
         Command::Serve {
             config,
-            addr,
-            data_dir,
-        } => http::serve(config, addr, data_dir).await,
+            address,
+            hostname,
+            dir,
+        } => http::serve(config, address, hostname, dir).await,
         Command::Search {
             query,
             limit,
@@ -55,7 +65,7 @@ async fn search_command(
     providers: Vec<String>,
     config_path: Option<String>,
 ) -> i32 {
-    let service = match build_service(config_path, None, None) {
+    let service = match build_backend(config_path) {
         Ok(service) => service,
         Err(error) => return report_error(error),
     };
@@ -67,7 +77,10 @@ async fn search_command(
     if !providers.is_empty() {
         request.providers = providers;
     }
-    let response = service.search(request).await;
+    let response = match service.search(request).await {
+        Ok(response) => response,
+        Err(error) => return report_error(error),
+    };
     if json {
         crate::render::json(&response)
     } else {
@@ -82,11 +95,14 @@ async fn fetch_command(
     json: bool,
     config_path: Option<String>,
 ) -> i32 {
-    let service = match build_service(config_path, None, None) {
+    let service = match build_backend(config_path) {
         Ok(service) => service,
         Err(error) => return report_error(error),
     };
-    let mut results = service.fetch(&urls).await;
+    let mut results = match service.fetch(&urls).await {
+        Ok(results) => results,
+        Err(error) => return report_error(error),
+    };
     for result in &mut results {
         if let Some(focus) = query.as_deref() {
             result.text = search::text::select(&result.text, focus, max_characters.unwrap_or(4000))
@@ -111,11 +127,16 @@ async fn index_command(
     json: bool,
     config_path: Option<String>,
 ) -> i32 {
-    let service = match build_service(config_path, None, None) {
+    let service = match build_backend(config_path) {
         Ok(service) => service,
         Err(error) => return report_error(error),
     };
-    match service.index_search(&query, limit) {
+    match service
+        .execute(Operation::Index { query, limit })
+        .await
+        .and_then(|value| {
+            serde_json::from_value::<Vec<search::index::Hit>>(value).map_err(|e| e.to_string())
+        }) {
         Ok(results) => {
             if json {
                 crate::render::json(&results)
@@ -128,11 +149,14 @@ async fn index_command(
 }
 
 async fn refresh_command(config_path: Option<String>) -> i32 {
-    let service = match build_service(config_path, None, None) {
+    let service = match build_backend(config_path) {
         Ok(service) => service,
         Err(error) => return report_error(error),
     };
-    let refreshed = service.refresh_seeded().await;
+    let refreshed = match service.execute(Operation::Refresh).await {
+        Ok(value) => value,
+        Err(error) => return report_error(error),
+    };
     println!("Refreshed {refreshed} document(s)");
     0
 }
@@ -142,20 +166,28 @@ fn report_error(error: String) -> i32 {
     1
 }
 
+/// Select a remote before opening local storage; selected failures are errors.
+pub(crate) fn build_backend(config_path: Option<String>) -> Result<Backend, String> {
+    if let Some(remote) = crate::remote::selected(config_path.clone())? {
+        return Ok(remote);
+    }
+    build_service(config_path, None, None).map(Backend::Local)
+}
+
 /// Load configuration and build the service, applying serve overrides before
 /// validating the effective settings.
 pub(super) fn build_service(
     config_path: Option<String>,
-    addr: Option<String>,
-    data_dir: Option<String>,
+    address: Option<String>,
+    dir: Option<String>,
 ) -> Result<Arc<Search>, String> {
     let path = config_path.map(std::path::PathBuf::from);
     let mut settings = config::load(path).map_err(|e| e.message().to_string())?;
-    if let Some(addr) = addr {
-        settings.addr = addr;
+    if let Some(address) = address {
+        settings.address = address;
     }
-    if let Some(dir) = data_dir {
-        settings.data_dir = std::path::PathBuf::from(dir);
+    if let Some(dir) = dir {
+        settings.dir = std::path::PathBuf::from(dir);
     }
     // Overrides bypassed validation at load time, so re-check the effective
     // settings before binding.

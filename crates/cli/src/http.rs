@@ -1,9 +1,7 @@
 //! The HTTP surface: a small JSON API and the streamable MCP endpoint on one
 //! listener.
 //!
-//! Every request passes the same bearer check before it is routed, so no path —
-//! including errors — reveals itself to an unauthenticated caller. The MCP
-//! endpoint is behind that same check.
+//! Paired HTTPS protects every API and MCP request; pairing alone is public.
 
 use std::sync::Arc;
 
@@ -16,46 +14,102 @@ use search::discovery::Query;
 use search::Search;
 use search_mcp::mount as mount_mcp;
 
-use crate::run::build_service;
+use crate::{run::build_service, trust::Host};
+use search_mcp::backend::{Backend, Operation};
 
-/// Serve the JSON API and MCP over HTTP until interrupted.
+/// Host the local engine behind paired HTTPS until interrupted.
 pub async fn serve(
     config_path: Option<String>,
-    addr: Option<String>,
-    data_dir: Option<String>,
+    address: Option<String>,
+    hostname: Option<String>,
+    dir: Option<String>,
 ) -> i32 {
-    let service = match build_service(config_path, addr, data_dir) {
+    let service = match build_service(config_path, address, dir) {
         Ok(service) => service,
         Err(message) => {
             eprintln!("search: {message}");
             return 1;
         }
     };
-    if service.config().resolved_token().is_none() {
-        eprintln!(
-            "search: no token configured; set the variable named by tokenEnv (default {})",
-            search::config::DEFAULT_TOKEN_ENV
-        );
+    let bind_hostname = service
+        .config()
+        .address
+        .rsplit_once(':')
+        .map(|(host, _)| host.trim_matches(['[', ']']))
+        .unwrap_or("localhost");
+    let hostname = hostname.as_deref().unwrap_or(bind_hostname);
+    if matches!(hostname, "" | "0.0.0.0" | "::") {
+        eprintln!("search: wildcard binds require -hostname NAME for the TLS identity");
         return 1;
     }
-    let listener = match tokio::net::TcpListener::bind(&service.config().addr).await {
+    let host = match Host::open(
+        &service.config().dir,
+        hostname,
+        std::time::Duration::from_secs(900),
+    ) {
+        Ok(host) => Arc::new(host),
+        Err(error) => {
+            eprintln!("search: {error}");
+            return 1;
+        }
+    };
+    let tls = match axum_server::tls_rustls::RustlsConfig::from_pem(
+        host.cert.as_bytes().to_vec(),
+        host.key.as_bytes().to_vec(),
+    )
+    .await
+    {
+        Ok(tls) => tls,
+        Err(error) => {
+            eprintln!("search: TLS identity: {error}");
+            return 1;
+        }
+    };
+    let listener = match std::net::TcpListener::bind(&service.config().address) {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("search: bind {}: {error}", service.config().addr);
+            eprintln!("search: bind: {error}");
             return 1;
         }
     };
     eprintln!(
+        "search: certificate {}",
+        host.path.join("host.pem").display()
+    );
+    eprintln!("search: SHA-256 {}", host.fingerprint);
+    eprintln!(
+        "search: one-use pairing code {} (expires in 15 minutes; 20 attempts)",
+        host.code
+    );
+    eprintln!(
         "search: listening on {} (data {}, version {})",
-        service.config().addr,
-        service.config().data_dir.display(),
+        service.config().address,
+        service.config().dir.display(),
         search::VERSION
     );
-    let shutdown = async {
+    eprintln!("search: run search pair-code with the same local settings to pair another device");
+    let handle = axum_server::Handle::new();
+    let shutdown_handle = handle.clone();
+    tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
+        shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+    });
+    // MCP validates the advertised authority rather than a wildcard bind address.
+    let authority = match service.config().address.rsplit_once(':') {
+        Some((_, port)) if hostname.contains(':') => format!("[{hostname}]:{port}"),
+        Some((_, port)) => format!("{hostname}:{port}"),
+        None => hostname.to_string(),
     };
-    if let Err(error) = axum::serve(listener, router(service))
-        .with_graceful_shutdown(shutdown)
+    let server = match axum_server::from_tcp_rustls(listener, tls) {
+        Ok(server) => server,
+        Err(error) => {
+            eprintln!("search: listener: {error}");
+            return 1;
+        }
+    };
+    if let Err(error) = server
+        .handle(handle)
+        .serve(router(service, host, &authority).into_make_service())
         .await
     {
         eprintln!("search: server stopped: {error}");
@@ -64,78 +118,98 @@ pub async fn serve(
     0
 }
 
-/// Build the router. The auth layer wraps every route, MCP included. The token
-/// is resolved once here, so a per-request check never reads the environment.
-fn router(service: Arc<Search>) -> Router {
-    let allowed_host = service.config().addr.clone();
-    let mcp = mount_mcp(Arc::clone(&service), &allowed_host);
-    let token = service.config().resolved_token().unwrap_or_default();
-    let guard = AuthGuard {
-        expected: Arc::new(token),
-    };
-    Router::new()
+/// Protect every execution route; `allowed_host` is the advertised MCP authority.
+pub fn router(service: Arc<Search>, host: Arc<Host>, allowed_host: &str) -> Router {
+    let mcp = mount_mcp(Arc::clone(&service), allowed_host);
+    let protected = Router::new()
         .route("/healthz", get(health))
         .route("/v1/status", get(status))
         .route("/v1/search", get(search))
         .route("/v1/index", get(index_search))
         .route("/v1/fetch", post(fetch))
-        // The MCP endpoint is nested so its own paths stay under /mcp, and it
-        // sits inside the same auth layer as everything else.
+        .route("/v1/execute", post(execute))
         .nest_service("/mcp", mcp)
-        .layer(axum::middleware::from_fn_with_state(guard, auth))
-        .with_state(service)
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&host),
+            auth,
+        ))
+        .with_state(service);
+    protected
+        .merge(Router::new().route("/pair", post(pair)).with_state(host))
+        .layer(axum::extract::DefaultBodyLimit::max(1 << 20))
 }
 
-/// The resolved token the auth layer compares against, held once per server.
-#[derive(Clone)]
-struct AuthGuard {
-    expected: Arc<String>,
-}
-
-/// Reject any request without the configured bearer token, in constant time.
+/// Refuse browser-origin requests and accept only currently registered device secrets.
 async fn auth(
-    State(guard): State<AuthGuard>,
+    State(host): State<Arc<Host>>,
     headers: HeaderMap,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    // A server with no token denies everything.
-    if guard.expected.is_empty() {
-        return unauthorized();
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        return StatusCode::FORBIDDEN.into_response();
     }
     let presented = headers
         .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::trim)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
-    if !constant_time_eq(presented.as_bytes(), guard.expected.as_bytes()) {
-        return unauthorized();
+    if !host.authorized(presented) {
+        return StatusCode::UNAUTHORIZED.into_response();
     }
     next.run(request).await
 }
 
-/// A 401 with the standard challenge.
-fn unauthorized() -> Response {
-    let mut response = StatusCode::UNAUTHORIZED.into_response();
-    response.headers_mut().insert(
-        axum::http::header::WWW_AUTHENTICATE,
-        axum::http::HeaderValue::from_static("Bearer realm=\"search\""),
-    );
-    response
+/// A pairing request carries the one-time code, never an existing device credential.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairBody {
+    code: String,
+    name: String,
 }
 
-/// Compare two byte slices in constant time. Lengths are allowed to differ in
-/// timing; the token value never is.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+/// Enroll one device; deliberately return generic failures.
+async fn pair(
+    State(host): State<Arc<Host>>,
+    headers: HeaderMap,
+    Json(body): Json<PairBody>,
+) -> Response {
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        return StatusCode::FORBIDDEN.into_response();
     }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b) {
-        diff |= x ^ y;
+    match host.pair(&body.code, &body.name) {
+        Ok(credential) => Json(credential).into_response(),
+        Err(_) => StatusCode::FORBIDDEN.into_response(),
     }
-    diff == 0
+}
+
+/// Execute the shared CLI/stdio contract with bounded inputs on the host.
+async fn execute(State(service): State<Arc<Search>>, Json(operation): Json<Operation>) -> Response {
+    match &operation {
+        Operation::Search { query }
+            if query.text.trim().is_empty()
+                || query.text.len() > 512
+                || query.limit > 50
+                || query.per_provider > 50 =>
+        {
+            return bad_request("invalid search bounds")
+        }
+        Operation::Index { query, limit }
+            if query.trim().is_empty() || query.len() > 512 || *limit > 50 =>
+        {
+            return bad_request("invalid index bounds")
+        }
+        Operation::Fetch { urls }
+            if urls.is_empty() || urls.len() > 10 || urls.iter().any(|u| u.len() > 8192) =>
+        {
+            return bad_request("invalid fetch bounds")
+        }
+        _ => {}
+    }
+    match Backend::Local(service).execute(operation).await {
+        Ok(value) => Json(value).into_response(),
+        Err(_) => status_error(StatusCode::INTERNAL_SERVER_ERROR, "operation failed"),
+    }
 }
 
 /// Query parameters for the search endpoint.
@@ -259,25 +333,4 @@ fn bad_request(message: &str) -> Response {
 /// A JSON error with a status.
 fn status_error(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The bearer check must accept the exact token and refuse everything else,
-    /// including a different token of the same length.
-    #[test]
-    fn constant_time_compare_matches_exactly() {
-        assert!(constant_time_eq(
-            b"secret-token-value",
-            b"secret-token-value"
-        ));
-        assert!(!constant_time_eq(
-            b"secret-token-value",
-            b"secret-token-valuX"
-        ));
-        assert!(!constant_time_eq(b"secret-token-value", b"short"));
-        assert!(!constant_time_eq(b"", b"secret"));
-    }
 }

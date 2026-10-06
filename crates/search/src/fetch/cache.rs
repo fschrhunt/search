@@ -27,6 +27,9 @@ impl TtlCache {
     }
 
     pub(super) fn get(&self, key: &str) -> Option<Fetched> {
+        if self.ttl.is_zero() {
+            return None;
+        }
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         match entries.get(key) {
             Some((value, at)) if at.elapsed() <= self.ttl => Some(value.clone()),
@@ -39,6 +42,9 @@ impl TtlCache {
     }
 
     pub(super) fn put(&self, key: &str, value: &Fetched) {
+        if self.ttl.is_zero() {
+            return;
+        }
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         if entries.len() >= MAX_ENTRIES {
             entries.clear();
@@ -54,6 +60,7 @@ mod tests {
     fn fetched() -> Fetched {
         Fetched {
             url: "https://example.com".into(),
+            fetched_at: Some(1_700_000_000),
             final_url: None,
             status: 200,
             content_type: "text/html".into(),
@@ -73,12 +80,23 @@ mod tests {
     fn a_fresh_entry_is_returned_and_expiry_clears_it() {
         let cache = TtlCache::new(Duration::from_secs(60));
         cache.put("k", &fetched());
-        assert!(cache.get("k").is_some());
+        assert_eq!(
+            cache.get("k").and_then(|page| page.fetched_at),
+            Some(1_700_000_000)
+        );
         let mut entries = cache.entries.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((_, inserted)) = entries.get_mut("k") {
             *inserted = Instant::now() - Duration::from_secs(61);
         }
         drop(entries);
         assert!(cache.get("k").is_none());
+    }
+
+    #[test]
+    fn zero_ttl_disables_storage() {
+        let cache = TtlCache::new(Duration::ZERO);
+        cache.put("k", &fetched());
+        assert!(cache.get("k").is_none());
+        assert!(cache.entries.lock().unwrap().is_empty());
     }
 }

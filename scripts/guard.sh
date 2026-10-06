@@ -40,7 +40,7 @@ done
 #    unreachable! outside tests, except where a proof comment on the same or
 #    preceding line explains why runtime input cannot reach the site.
 for f in $(prod_sources); do
-    awk -v file="$f" '
+    findings=$(awk -v file="$f" '
         /^#\[cfg\(test\)\]/ { exit }
         { lines[NR] = $0 }
         END {
@@ -56,7 +56,8 @@ for f in $(prod_sources); do
                 }
             }
         }
-    ' "$f"
+    ' "$f")
+    if [ -n "$findings" ]; then bad "$findings"; fi
 done
 
 # 3. The SSRF guard must exist and deny the metadata address. Removing or
@@ -70,10 +71,45 @@ grep -q "metadata.google.internal" "$guard" || bad "the SSRF guard no longer ref
 # 4. The fetcher must call the guard before dialing.
 grep -q "guard::check_host" crates/search/src/fetch/mod.rs || bad "the fetcher no longer calls the SSRF guard"
 
-# 5. Every HTTP request must pass the bearer check. The MCP endpoint and the
-#    JSON API both sit behind the auth layer in the binary.
-grep -q "middleware::from_fn_with_state" crates/cli/src/http.rs || bad "the auth middleware is no longer mounted"
-grep -q "fn auth" crates/cli/src/http.rs || bad "the auth middleware is gone"
+# 5. Paired HTTPS must wrap execution routes, including MCP. Pairing is the
+#    only public admission; device hashes are reloaded on every request.
+http=crates/cli/src/http.rs
+trust=crates/cli/src/trust.rs
+client=crates/mcp/src/backend.rs
+grep -q 'from_tcp_rustls' "$http" || bad "HTTPS listener is missing"
+grep -q 'middleware::from_fn_with_state' "$http" || bad "device auth layer is not mounted"
+grep -q 'host.authorized(presented)' "$http" || bad "request auth no longer checks current devices"
+grep -q 'nest_service("/mcp", mcp)' "$http" || bad "MCP is not in the protected router"
+grep -q 'read::<Devices>' "$trust" || bad "device hashes are not reloaded per admission"
+grep -q 'ct_eq' "$trust" || bad "device/code comparison is not constant time"
+grep -q 'pairing.attempts >= 20' "$trust" || bad "pairing attempt bound is missing"
+grep -q 'now >= pairing.expires' "$trust" || bad "pairing expiry check is missing"
+grep -q 'pairing.used = true' "$trust" || bad "pairing codes are not consumed"
+grep -q 'mode(0o600)' "$trust" || bad "trust files are not owner-only"
+grep -q 'builder.mode(0o700)' "$trust" || bad "trust dir is not owner-only"
+grep -q 'lock_exclusive' "$trust" || bad "trust writers are not serialized"
+
+grep -q 'update(&self.path.join("pairing.json")' "$trust" || bad "pair admissions do not lock persisted state"
+grep -q 'update(&path.join("pairing.json")' "$trust" || bad "code renewal does not share the admission lock"
+grep -q 'hash: hash(&code)' "$trust" || bad "pairing code is not stored as a hash"
+# 6. A pin augments standard verification; it never replaces name, validity or
+#    signature checks. Credential clients forbid plaintext, redirects and proxies.
+grep -q 'fingerprint(&remote.cert)? != remote.fingerprint' "$client" || bad "pre-credential fingerprint check is missing"
+grep -q 'cert != &self.cert' "$client" || bad "TLS leaf pin is missing"
+for method in verify_server_cert verify_tls12_signature verify_tls13_signature; do
+    tr -d '[:space:]' < "$client" | grep -q "self.verifier.$method" || bad "standard TLS $method delegation is missing"
+done
+grep -q 'WebPkiServerVerifier::builder_with_provider' "$client" || bad "standard WebPKI verifier is missing"
+grep -q 'https_only(true)' "$client" || bad "credential client allows plaintext"
+grep -q 'redirect(reqwest::redirect::Policy::none())' "$client" || bad "credential client follows redirects"
+grep -q 'no_proxy()' "$client" || bad "credential client may use environment proxies"
+if grep -rE 'danger_accept_invalid|ServerCertVerified::assertion|HandshakeSignatureValid::assertion|resolved_token|AUTH_TOKEN|DEFAULT_TOKEN_ENV' crates/*/src; then
+    bad "insecure TLS acceptance or legacy shared authentication is present"
+fi
+
+# Behavioral counterexamples complement these source checks in ./x check.
+[ -f crates/cli/tests/remote.rs ] || bad "offline paired-routing contract is missing"
+grep -q 'pairing_bounds_and_hash_storage' "$trust" || bad "pairing bounds counterexamples are missing"
 
 if [ "$fail" -eq 0 ]; then
     say "guard: ok"

@@ -2,20 +2,10 @@
 
 search is a web search service. It fans a query out to several independent
 providers, merges and reranks the results, reads pages through a hardened
-fetcher, and indexes everything it reads into a private corpus.
+fetcher, and optionally saves pages into a server-local corpus.
 
 It speaks the Model Context Protocol, so an agent uses it as two tools —
 `web_search` and `web_fetch` — and it also offers a small JSON API.
-
-## Set a token
-
-The service authenticates every request. Set a token in its environment:
-
-```sh
-export SEARCH_TOKEN=$(openssl rand -hex 32)
-```
-
-A non-loopback bind refuses to start without one.
 
 ## Serve MCP over stdio
 
@@ -26,26 +16,28 @@ spawns:
 { "mcp": { "servers": { "search": { "command": ["search"] } } } }
 ```
 
-## Serve over HTTP
+## Serve over HTTPS
 
 ```sh
 search serve
 ```
 
-This binds `127.0.0.1:8642` and serves the JSON API and the MCP endpoint
-(`/mcp`) on one listener. Set `addr` in the config to reach it on a private
-interface such as a tailnet address.
+This binds `127.0.0.1:8642` with paired HTTPS and serves the JSON API and the MCP endpoint
+(`/mcp`) on one listener. Set `address` in the config to reach it on a private
+interface such as a tailnet address. Follow [remote hosting](remote.md) to pair
+clients and route CLI and stdio MCP to the host.
 
 ## The JSON API
 
-All requests carry `Authorization: Bearer $SEARCH_TOKEN`.
+Execution requests carry a per-device bearer credential over pinned HTTPS.
 
 ```
 GET  /healthz                 liveness
 GET  /v1/status               providers, corpus size, version
 GET  /v1/search?q=...         discover across providers
 GET  /v1/index?q=...          search only what has been fetched already
-POST /v1/fetch {"urls":[...]} read pages into text, and index them
+POST /v1/fetch {"urls":[...]} read pages into text, optionally save them
+POST /v1/execute              CLI/stdio operations, including refresh
 POST /mcp                     MCP over streamable HTTP
 ```
 
@@ -63,8 +55,12 @@ timed out, or failed.
   want. With `max_characters` it bounds the answer. Without a query it returns
   the page's clean text.
 
-Reading is safe to repeat: a page fetched once is stored in the index and served
-from there on a re-read. Private and link-local addresses are refused.
+Search results and fetched pages include `fetched_at` when Search has a local
+copy or has fetched the page. It is a Unix timestamp for Search's fetch time,
+not the page's publication date; live-only search results omit it.
+
+When fetch indexing is enabled, reading a page stores it in the index for later
+local searches. Private and link-local addresses are refused.
 
 ## What "clean" means
 
@@ -74,9 +70,12 @@ text and images to their alt text, so a fetched page cannot carry a URL that a
 client would fetch on the model's behalf. A page that exists only to redirect
 elsewhere is followed to its target.
 
-## The private corpus
+## The server-local corpus
 
-Every page `web_fetch` reads is stored and full-text indexed. `GET /v1/index`
-searches that corpus offline, so a page read once is instant to read again and
-independent of any provider. The corpus lives in `data_dir` as a SQLite
-database.
+When `index.save_fetched_pages` is enabled, pages read by `web_fetch` are stored
+and full-text indexed. `GET /v1/index` searches that corpus offline. The corpus
+lives in `dir` as a SQLite database; see [configuration](configuration.md)
+to disable saving and blended local results.
+
+Paired clients share the host's corpus. Set `index.enabled` to `false` to avoid
+all database access; explicit index queries then report that it is disabled.

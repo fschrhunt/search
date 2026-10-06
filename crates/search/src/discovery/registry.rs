@@ -14,7 +14,7 @@ use super::{
     default_providers, FailureCause, Finding, Provider, ProviderError, ProviderState,
     ProviderStatus, Query, Ranked, Response,
 };
-use crate::config::{EngineSettings, SearchSettings};
+use crate::config::{ProviderSettings, SearchSettings};
 
 /// Holds the enabled providers and the query bounds.
 pub struct Registry {
@@ -25,8 +25,8 @@ pub struct Registry {
 impl Registry {
     /// Build the registry from configuration. A provider whose required key is
     /// missing is dropped rather than failing startup.
-    pub fn new(engines: &EngineSettings, search: SearchSettings) -> Self {
-        let providers: Vec<Arc<dyn Provider>> = default_providers(engines)
+    pub fn new(providers: &ProviderSettings, search: SearchSettings) -> Self {
+        let providers: Vec<Arc<dyn Provider>> = default_providers(providers)
             .into_iter()
             .filter(|p| !p.missing_key())
             .map(Arc::from)
@@ -44,7 +44,7 @@ impl Registry {
 
     /// The server-side ceiling for one query.
     pub fn overall_timeout(&self) -> Duration {
-        self.settings.overall_timeout()
+        self.settings.timeout()
     }
 
     /// Run the query across every selected provider and merge the answers.
@@ -58,7 +58,7 @@ impl Registry {
         };
 
         let selected: Vec<Arc<dyn Provider>> = self.select(&query.providers);
-        let per_provider_time = self.settings.max_provider_time();
+        let per_provider_time = self.settings.provider_timeout();
 
         let mut set: JoinSet<(usize, ProviderState, Vec<Ranked>)> = JoinSet::new();
         for (index, provider) in selected.iter().enumerate() {
@@ -73,7 +73,7 @@ impl Registry {
         let mut collected: Vec<Option<(ProviderState, Vec<Ranked>)>> =
             (0..selected.len()).map(|_| None).collect();
         let mut panicked = Vec::new();
-        let completed = tokio::time::timeout(self.settings.overall_timeout(), async {
+        let completed = tokio::time::timeout(self.settings.timeout(), async {
             while let Some(joined) = set.join_next().await {
                 match joined {
                     // The index is produced by `enumerate` over `selected`, so it is
@@ -233,6 +233,9 @@ fn fuse(results: &[Ranked], limit: usize) -> Vec<Finding> {
             Some(existing) => {
                 let incoming = &ranked.finding;
                 existing.score += vote;
+                if existing.finding.fetched_at.is_none() {
+                    existing.finding.fetched_at = incoming.fetched_at;
+                }
                 if existing.finding.snippet.is_none() {
                     existing.finding.snippet = incoming.snippet.clone();
                 }
@@ -241,7 +244,7 @@ fn fuse(results: &[Ranked], limit: usize) -> Vec<Finding> {
                 }
                 for provider in &incoming.providers {
                     if !existing.finding.providers.contains(provider) {
-                        existing.finding.providers.push(provider);
+                        existing.finding.providers.push(provider.clone());
                     }
                 }
             }
@@ -300,7 +303,8 @@ pub fn blend(response: &mut Response, local: &[crate::index::Hit], weight: f64, 
                 },
                 url: hit.url.clone(),
                 snippet: Some(hit.snippet.clone()).filter(|s| !s.is_empty()),
-                providers: vec!["index"],
+                fetched_at: Some(hit.fetched_at),
+                providers: vec!["index".into()],
                 score: hit.score,
             },
             rank: rank + 1,
@@ -404,7 +408,8 @@ mod tests {
                         title: format!("result {i}"),
                         url: format!("https://example.com/{i}"),
                         snippet: None,
-                        providers: vec!["test"],
+                        fetched_at: None,
+                        providers: vec!["test".into()],
                         score: 0.0,
                     })
                     .collect())
@@ -452,8 +457,8 @@ mod tests {
     async fn overall_deadline_returns_without_waiting_for_provider_deadline() {
         let asked = Arc::new(AtomicUsize::new(0));
         let settings = SearchSettings {
-            overall_timeout_ms: 10,
-            max_provider_time_ms: 5_000,
+            timeout: 10,
+            provider_timeout: 5_000,
             ..SearchSettings::default()
         };
         let registry = registry(
@@ -480,13 +485,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn blended_results_keep_the_local_copy_fetch_time() {
+        let mut response = Response {
+            query: "test".into(),
+            results: vec![ranked("https://example.com/page", "brave", 1).finding],
+            providers: Vec::new(),
+            duration_ms: 0,
+        };
+        let local = [crate::index::Hit {
+            url: "https://example.com/page".into(),
+            title: "example".into(),
+            snippet: "snippet".into(),
+            host: "example.com".into(),
+            fetched_at: 1_700_000_000,
+            score: 1.0,
+        }];
+
+        blend(&mut response, &local, 1.0, 10);
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].fetched_at, Some(1_700_000_000));
+        assert!(response.results[0].providers.contains(&"index".into()));
+    }
+
     fn ranked(url: &str, provider: &'static str, rank: usize) -> Ranked {
         Ranked {
             finding: Finding {
                 title: url.into(),
                 url: url.into(),
                 snippet: None,
-                providers: vec![provider],
+                fetched_at: None,
+                providers: vec![provider.into()],
                 score: 0.0,
             },
             rank,
@@ -510,7 +540,8 @@ mod tests {
         assert_eq!(out.len(), 3, "duplicates collapse");
         assert_eq!(out[0].url, "https://a.example/x");
         assert!(
-            out[0].providers.contains(&"brave") && out[0].providers.contains(&"wikipedia"),
+            out[0].providers.contains(&"brave".into())
+                && out[0].providers.contains(&"wikipedia".into()),
             "both providers are named, as a list"
         );
         // The single-vote rank-1 (mwmbl) must outrank the single-vote rank-2.

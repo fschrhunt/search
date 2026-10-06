@@ -26,6 +26,15 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "io-std", "net"] }
 axum.workspace = true
 uuid.workspace = true
+sha2.workspace = true
+subtle = "2"
+rcgen = "0.14"
+axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
+fs2 = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+reqwest.workspace = true

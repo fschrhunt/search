@@ -1,5 +1,5 @@
-//! The private, on-disk corpus: pages the fetcher has seen, searchable offline
-//! with full-text search.
+//! The server-local, on-disk corpus: saved pages searchable offline,
+//! shared by clients authorized to use this instance.
 //!
 //! It is deliberately separate from discovery. Discovery finds URLs anywhere on
 //! the web; the index makes content already fetched instant and independent of
@@ -18,7 +18,7 @@ use crate::config::IndexSettings;
 pub use schema::Stats;
 
 /// A stored page.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Doc {
     pub url: String,
     pub title: String,
@@ -28,7 +28,7 @@ pub struct Doc {
 }
 
 /// A full-text hit, ranked by BM25.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Hit {
     pub url: String,
     pub title: String,
@@ -44,6 +44,10 @@ pub struct Hit {
 pub struct StoreError(String);
 
 impl StoreError {
+    /// Explicit local operations cannot access a disabled corpus.
+    pub(crate) fn disabled() -> Self {
+        StoreError("local index is disabled".into())
+    }
     pub fn message(&self) -> &str {
         &self.0
     }
@@ -73,7 +77,7 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open the store under `dir`, creating the directory and schema, and apply
+    /// Open the store under `dir`, creating the dir and schema, and apply
     /// the corpus's hygiene: prune what has aged out before serving.
     pub fn open(dir: &Path, settings: IndexSettings) -> Result<Self, StoreError> {
         std::fs::create_dir_all(dir)
@@ -380,7 +384,9 @@ mod tests {
     fn aged_documents_are_pruned() {
         let dir = std::env::temp_dir().join(format!("search-age-{}", uuid::Uuid::new_v4()));
         let settings = crate::config::IndexSettings {
-            max_age_days: 1,
+            save_fetched_pages: None,
+            include_in_search: None,
+            retention_days: 1,
             ..Default::default()
         };
         let store = Store::open(&dir, settings).expect("open");
@@ -401,10 +407,13 @@ mod tests {
     fn the_byte_ceiling_evicts_oldest_first() {
         let dir = std::env::temp_dir().join(format!("search-size-{}", uuid::Uuid::new_v4()));
         let settings = crate::config::IndexSettings {
+            save_fetched_pages: None,
+            include_in_search: None,
             max_size_mb: 1,
-            max_age_days: 0,
+            enabled: true,
+            retention_days: 0,
             refresh_hosts: Vec::new(),
-            refresh_after_days: 7,
+            refresh_interval_days: 7,
         };
         let store = Store::open(&dir, settings).expect("open");
         // Two documents, each about 0.6 MB of text, exceed the 1 MB ceiling.
