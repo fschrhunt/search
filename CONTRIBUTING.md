@@ -5,22 +5,27 @@ search is a self-hosted web search service in Rust. This is how to change it.
 ## Getting set up
 
 Rust 1.98 is pinned in `rust-toolchain.toml`; `rustup` will install it on first
-build. Python 3 is needed only for the UI-free parts of the checks — nothing
-here needs it.
+build.
 
 ```sh
-./x hooks     # once per clone: gofmt-equivalent and clippy before each commit
 ./x check     # what a pull request must pass
 ```
 
 `./x check` runs, in order:
 
 - `./x fmt --check` — `cargo fmt --all --check`
-- `./x lint` — `cargo clippy --all-targets -- -D warnings`
+- `./x lint` — `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - `./x test` — the workspace tests
+- `./x shell` — syntax checks for the entrypoint, installer, and release scripts
 - `./x guard` — `scripts/guard.sh`, the security-surface audit
 
 CI runs the same commands, so your machine and CI never disagree about green.
+
+`./x` defaults to `check` and does not rewrite source files or lockfiles.
+`./x help` lists commands. Build, fmt, lint, and test forward Cargo arguments;
+for example, `./x build --release` or `./x test -p search guard`.
+`./x fmt` formats files; `./x fmt --check` only checks them. `check`, `shell`,
+and `guard` reject extra arguments.
 
 ## What a change needs
 

@@ -4,12 +4,23 @@
 set -eu
 cd "$(dirname "$0")"
 
+# Print the command contract; errors exit 2 and explicit help exits 0.
 usage() {
-    echo "usage: ./x [build|fmt|lint|test|check|guard|shell|serve|stdio] [args...]" >&2
-    exit 2
+    cat >&2 <<'EOF'
+usage: ./x [check|build|fmt|lint|test|guard|shell|serve|stdio] [args...]
+  check        default: formatting, lint, workspace tests, shell syntax, guard
+  build        cargo build arguments, e.g. --release
+  fmt          cargo fmt arguments; --check leaves sources unchanged
+  lint         cargo clippy arguments before --; warnings are denied
+  test         cargo test arguments, e.g. -p search guard
+  guard|shell  security-surface audit or shell syntax; no arguments
+  serve|stdio  build and run Search, forwarding application arguments
+  help         show this help
+EOF
+    exit "${1:-2}"
 }
 
-command=${1:-check}
+command=${1-check}
 if [ "$#" -gt 0 ]; then
     shift
 fi
@@ -19,11 +30,7 @@ case "$command" in
         cargo build --locked "$@"
         ;;
     fmt)
-        if [ "${1:-}" = "--check" ]; then
-            cargo fmt --all --check
-        else
-            cargo fmt --all
-        fi
+        cargo fmt --all "$@"
         ;;
     lint)
         cargo clippy --locked --all-targets --all-features "$@" -- -D warnings
@@ -40,11 +47,12 @@ case "$command" in
         ./x guard
         ;;
     guard)
+        [ "$#" -eq 0 ] || usage
         sh scripts/guard.sh
         ;;
-    # The shell scripts the release runs: a syntax error here fails a release,
-    # not a pull request, so it belongs in check.
+    # Check release-script syntax before it reaches a release.
     shell)
+        [ "$#" -eq 0 ] || usage
         for script in x install.sh scripts/*.sh; do
             sh -n "$script"
         done
@@ -57,6 +65,10 @@ case "$command" in
     stdio)
         cargo build --locked
         exec ./target/debug/search "$@"
+        ;;
+    -h|--help|help)
+        [ "$#" -eq 0 ] || usage
+        usage 0
         ;;
     *)
         usage
