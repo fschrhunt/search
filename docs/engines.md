@@ -291,7 +291,7 @@ Restart long-running hosts and stdio sessions after changing packages, selection
 configuration, or process credentials. Update/remove refuse packages held by a
 running Search process; stop it first.
 
-The default engine deadline is two seconds and the overall search deadline is
+The default engine deadline is five seconds and the overall search deadline is
 eight seconds. For slower APIs, merge this into your [settings](configuration.md):
 
 ```json

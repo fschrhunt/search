@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Keep search orchestration opt-in and bounded: only Mwmbl runs by default,
+  additional engines require explicit activation, the per-engine deadline is
+  five seconds, and unavailable selections produce an explicit engine error.
+- Preserve literal square brackets in fetched code and prose while continuing
+  to neutralize Markdown link/image targets.
+- Show failed and timed-out engines in terminal search output without exposing
+  program stderr or credential values.
 - Focused fetches with no matching passages return bounded page text rather than
   labelling the opening as a match; preserve truncation metadata for that fallback.
 - **Breaking Rust API:** consolidate into one root `search` package and library,

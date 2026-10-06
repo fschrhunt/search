@@ -474,6 +474,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unavailable_selections_are_deduplicated_without_suppressing_enabled_engines() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let pool = pool(
+            TestEngine {
+                limit: Arc::clone(&asked),
+                delay: Duration::ZERO,
+                count: 1,
+            },
+            SearchSettings::default(),
+        );
+        let answer = pool
+            .search(Query {
+                text: "query".into(),
+                engines: vec!["missing".into(), "test".into(), "missing".into()],
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            SearchSettings::default().max_results
+        );
+        assert_eq!(answer.engines.len(), 2);
+        let missing = answer
+            .engines
+            .iter()
+            .find(|engine| engine.name == "missing")
+            .unwrap();
+        assert_eq!(missing.status, EngineStatus::Error);
+        assert_eq!(missing.error.as_deref(), Some("engine is not enabled"));
+        assert_eq!(answer.results.len(), 1);
+    }
+
+    #[tokio::test]
     async fn overall_deadline_returns_without_waiting_for_engine_deadline() {
         let asked = Arc::new(AtomicUsize::new(0));
         let settings = SearchSettings {

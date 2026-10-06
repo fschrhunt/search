@@ -1,6 +1,7 @@
 //! Render engine responses as compact terminal text or machine-readable JSON.
 
 use crate::core::{Answer, Page};
+use crate::engines::EngineStatus;
 
 /// Print any serializable response as JSON; return a process-style status.
 pub fn json<T: serde::Serialize>(value: &T) -> i32 {
@@ -27,6 +28,22 @@ pub fn search(answer: &Answer) -> i32 {
         answer.results.len(),
         answer.duration_ms
     );
+    for engine in &answer.engines {
+        let status = match engine.status {
+            EngineStatus::Error => "failed",
+            EngineStatus::Timeout => "timed out",
+            EngineStatus::Ok => continue,
+        };
+        eprintln!(
+            "{}: {status}{}",
+            engine.name,
+            engine
+                .error
+                .as_ref()
+                .map(|error| format!(": {error}"))
+                .unwrap_or_default()
+        );
+    }
     0
 }
 

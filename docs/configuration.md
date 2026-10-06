@@ -21,7 +21,7 @@ Local CLI and stdio MCP need no pairing; hosting uses [paired HTTPS](remote.md).
   "address": "127.0.0.1:8642",
   "search": {
     "max_results": 10,
-    "engine_timeout": 2000,
+    "engine_timeout": 5000,
     "timeout": 8000
   },
   "fetch": {
@@ -49,7 +49,7 @@ fetch cache; `max_redirects: 0` follows no redirects.
 - `address` selects the listener. `user_agent` overrides page-fetch and HTTP-engine identity;
   by default it identifies Search and its version.
 - `search.engine_timeout` bounds one engine; `search.timeout` bounds the whole
-  query. `max_results` caps returned results.
+  query (defaults: 5000 ms and 8000 ms). `max_results` caps returned results.
 - `remote.max_response_bytes` caps a paired host's JSON response (default 64 MiB).
   Raise it for larger full-page batches; exceeding it returns an error, never a
   local fallback. `remote.timeout` bounds the entire request.

@@ -62,7 +62,7 @@ fn strip_link_targets(text: &str) -> String {
                 chars.next();
                 out.push_str(&take_bracketed(&mut chars, true));
             }
-            '[' => out.push_str(&take_bracketed(&mut chars, true)),
+            '[' => out.push_str(&take_bracketed(&mut chars, false)),
             // A bare URL is not a fetch trigger for the model, but an inline
             // image autoload is; leave bare URLs as text.
             c => out.push(c),
@@ -72,10 +72,11 @@ fn strip_link_targets(text: &str) -> String {
 }
 
 /// Consume `[text](target)` starting after the `[`, returning `text`. When the
-/// shape does not match, the consumed characters are returned unchanged.
+/// shape does not match, preserve literal brackets except for image-like syntax,
+/// which is still neutralized to prevent reference-style image autoloading.
 fn take_bracketed(
     chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
-    keep_text: bool,
+    image: bool,
 ) -> String {
     let mut text = String::new();
     let mut depth = 1usize;
@@ -96,7 +97,7 @@ fn take_bracketed(
         }
     }
     // Consume an immediately following `(target)`.
-    if chars.peek().map(|(_, c)| *c) == Some('(') {
+    if depth == 0 && chars.peek().map(|(_, c)| *c) == Some('(') {
         chars.next();
         let mut paren = 1usize;
         for (_, c) in chars.by_ref() {
@@ -111,12 +112,13 @@ fn take_bracketed(
                 _ => {}
             }
         }
+        return text;
     }
-    if keep_text {
-        text
-    } else {
-        String::new()
+    if image {
+        return text;
     }
+    let suffix = if depth == 0 { "]" } else { "" };
+    format!("[{text}{suffix}")
 }
 
 #[cfg(test)]
@@ -149,6 +151,23 @@ mod tests {
         assert_eq!(
             clean("read https://example.com/x"),
             "read https://example.com/x"
+        );
+    }
+
+    #[test]
+    fn literal_brackets_preserve_code_and_non_link_text() {
+        assert_eq!(clean("s1[0] and values[index]"), "s1[0] and values[index]");
+        assert_eq!(
+            clean("[nested [label]] ![literal] [unfinished"),
+            "[nested [label]] literal [unfinished"
+        );
+    }
+
+    #[test]
+    fn reference_images_stay_neutralized_when_literal_brackets_are_preserved() {
+        assert_eq!(
+            clean("![pixel][target]\n[target]: https://attacker.example/pixel"),
+            "pixel[target]\n[target]: https://attacker.example/pixel"
         );
     }
 }
