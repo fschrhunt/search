@@ -4,6 +4,10 @@
 
 - Make `./x` argument handling consistent: show command help, forward formatting
   arguments, and reject unexpected arguments to shell and guard checks.
+- Keep search orchestration deliberately opt-in: one default Mwmbl engine, with
+  additional packages queried only after explicit installation and activation.
+  Increase the per-engine deadline to five seconds and report explicitly requested
+  but unavailable engines rather than returning an unexplained empty answer.
 - Preserve literal square brackets in fetched code and prose while continuing to
   remove Markdown link/image targets; array indexing no longer loses its brackets.
 - Show failed, timed-out, and cancelled engines in terminal search output instead

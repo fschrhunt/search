@@ -55,7 +55,7 @@ impl Registry {
             self.settings.result_limit(query.per_provider)
         };
 
-        let selected: Vec<Arc<dyn Provider>> = self.select(&query.providers);
+        let (selected, missing) = self.select(&query.providers);
         let per_engine_time = self.settings.engine_timeout();
 
         let mut set: JoinSet<(usize, ProviderState, Vec<Ranked>)> = JoinSet::new();
@@ -118,7 +118,7 @@ impl Registry {
             }
         }
 
-        let mut states = Vec::with_capacity(collected.len());
+        let mut states = Vec::with_capacity(collected.len() + missing.len());
         let mut merged = Vec::new();
         for slot in collected.into_iter().flatten() {
             let (state, results) = slot;
@@ -126,6 +126,13 @@ impl Registry {
             merged.extend(results);
         }
         states.extend(panicked);
+        states.extend(missing.into_iter().map(|name| ProviderState {
+            name,
+            status: ProviderStatus::Error,
+            count: 0,
+            error: Some("engine is not enabled".into()),
+            elapsed_ms: 0,
+        }));
         states.sort_by(|a, b| a.name.cmp(&b.name));
 
         let results = fuse(&merged, limit);
@@ -137,18 +144,30 @@ impl Registry {
         }
     }
 
-    /// Restrict to the requested names, preserving registry order. A request for
-    /// names that match nothing returns no providers rather than silently
-    /// running them all — the caller sees the empty result and its cause.
-    fn select(&self, names: &[String]) -> Vec<Arc<dyn Provider>> {
+    /// Restrict to requested names and report missing selections instead of
+    /// silently running everything or returning an unexplained empty response.
+    fn select(&self, names: &[String]) -> (Vec<Arc<dyn Provider>>, Vec<String>) {
         if names.is_empty() {
-            return self.providers.clone();
+            return (self.providers.clone(), Vec::new());
         }
-        self.providers
+        let selected: Vec<Arc<dyn Provider>> = self
+            .providers
             .iter()
             .filter(|p| names.iter().any(|n| n == p.name()))
             .cloned()
-            .collect()
+            .collect();
+        let mut missing = Vec::new();
+        for name in names {
+            if !self
+                .providers
+                .iter()
+                .any(|provider| provider.name() == name)
+                && !missing.contains(name)
+            {
+                missing.push(name.clone());
+            }
+        }
+        (selected, missing)
     }
 }
 
@@ -449,6 +468,34 @@ mod tests {
 
         assert_eq!(asked.load(Ordering::SeqCst), 2);
         assert_eq!(response.results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn explicitly_requested_unavailable_engines_are_reported() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let registry = registry(
+            TestProvider {
+                limit: asked,
+                delay: Duration::ZERO,
+                count: 0,
+            },
+            SearchSettings::default(),
+        );
+        let response = registry
+            .search(Query {
+                text: "test".into(),
+                providers: vec!["missing".into(), "test".into(), "missing".into()],
+                ..Query::default()
+            })
+            .await;
+        assert_eq!(response.providers.len(), 2);
+        let missing = response
+            .providers
+            .iter()
+            .find(|state| state.name == "missing")
+            .unwrap();
+        assert_eq!(missing.status, ProviderStatus::Error);
+        assert_eq!(missing.error.as_deref(), Some("engine is not enabled"));
     }
 
     #[tokio::test]
