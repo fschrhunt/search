@@ -39,7 +39,7 @@ Build from source with Rust:
 ```sh
 git clone https://github.com/fschrhunt/search
 cd search
-cargo build --release
+./x build --release
 ```
 
 Search from your terminal—no server required:

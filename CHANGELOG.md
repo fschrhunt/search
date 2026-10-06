@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make `./x` argument handling consistent: show command help, forward formatting
+  arguments, and reject unexpected arguments to shell and guard checks.
 - Preserve literal square brackets in fetched code and prose while continuing to
   remove Markdown link/image targets; array indexing no longer loses its brackets.
 - Show failed, timed-out, and cancelled engines in terminal search output instead
