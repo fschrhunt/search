@@ -4,6 +4,7 @@
 set -eu
 cd "$(dirname "$0")"
 
+# Print the command contract; errors exit 2 and explicit help exits 0.
 usage() {
     cat <<'EOF'
 Usage: ./x COMMAND [args...]
@@ -22,24 +23,21 @@ EOF
     exit "${1:-2}"
 }
 
-command=${1:-check}
+command=${1-check}
 if [ "$#" -gt 0 ]; then
     shift
 fi
 
 case "$command" in
     help|-h|--help)
+        [ "$#" -eq 0 ] || usage >&2
         usage 0
         ;;
     build)
         cargo build --locked "$@"
         ;;
     fmt)
-        if [ "${1:-}" = "--check" ]; then
-            cargo fmt --all --check
-        else
-            cargo fmt --all
-        fi
+        cargo fmt --all "$@"
         ;;
     lint)
         cargo clippy --locked --all-targets --all-features "$@" -- -D warnings
@@ -60,11 +58,13 @@ case "$command" in
         ./x guard
         ;;
     guard)
+        [ "$#" -eq 0 ] || usage >&2
         sh scripts/guard.sh
         ;;
     # The shell scripts the release runs: a syntax error here fails a release,
     # not a pull request, so it belongs in check.
     shell)
+        [ "$#" -eq 0 ] || usage >&2
         for script in x install.sh scripts/*.sh; do
             sh -n "$script"
         done

@@ -28,6 +28,12 @@ not need Python at runtime.
 CI runs `./x check` too. Tests use local fixtures and mock servers, not live
 engine queries.
 
+`./x` defaults to `check` and does not rewrite source files or lockfiles.
+`./x help` lists commands. Build, fmt, lint, and test forward Cargo arguments;
+for example, `./x build --release` or `./x test guard`.
+`./x fmt` formats files; `./x fmt --check` only checks them. `check`, `shell`,
+and `guard` reject extra arguments.
+
 ## What a change needs
 
 - **One concern per pull request.** If the description says "also", split it.

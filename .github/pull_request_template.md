@@ -1,8 +1,12 @@
 ## What and why
 
-## Checks
+<!-- Explain the problem, what changed, and why it works. Link related issues. -->
 
-- [ ] `./x check` passes: format, Clippy `-D warnings`, tests, shell syntax, and guard
-- [ ] One test for each behavior change
-- [ ] `CHANGELOG.md` has an entry for any user-visible change
-- [ ] Engine changes preserve manifest schema 1 and command protocol 1
+## Verification
+
+- `./x check` —
+
+<!-- Covers Rust formatting, Clippy, feature builds, package tests, shell syntax,
+     and the guard. Add focused test commands/results; state failures, skips, or
+     limitations. Update affected docs and CHANGELOG.md for user-visible changes.
+     Engine changes must preserve manifest schema 1 and command protocol 1. -->

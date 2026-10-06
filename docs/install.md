@@ -51,7 +51,7 @@ installs the toolchain pinned in `rust-toolchain.toml` on the first build.
 ```sh
 git clone https://github.com/fschrhunt/search
 cd search
-cargo build --release
+./x build --release
 ./target/release/search version
 ./target/release/search help
 ```

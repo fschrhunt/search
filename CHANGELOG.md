@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make `./x` argument handling consistent: show command help, forward formatting
+  arguments, and reject unexpected arguments to shell and guard checks.
 - Keep search orchestration opt-in and bounded: only Mwmbl runs by default,
   additional engines require explicit activation, the per-engine deadline is
   five seconds, and unavailable selections produce an explicit engine error.

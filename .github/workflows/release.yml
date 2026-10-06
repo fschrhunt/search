@@ -64,7 +64,7 @@ jobs:
               mkdir -p "dist/$target"
               rustup target add "$triple"
               SEARCH_BUILD_VERSION="$TAG" SEARCH_BUILD_CHANNEL=release SEARCH_BUILD_COMMIT="$GITHUB_SHA" \
-                cargo build --release --locked --target "$triple" --bin search
+                ./x build --release --target "$triple" --bin search
               cp "target/$triple/release/search" "dist/$target/search"
               cp LICENSE "dist/$target/"
               tar -C "dist/$target" -czf "dist/$target.tar.gz" search LICENSE
