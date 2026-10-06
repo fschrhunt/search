@@ -15,6 +15,20 @@ struct Fixture {
     package: PathBuf,
 }
 
+/// Terminal output must not disguise a broken provider as a successful empty search.
+#[test]
+fn text_search_reports_provider_failures_without_leaking_program_stderr() {
+    let fixture =
+        Fixture::new("import sys\nprint('PRIVATE_MARKER', file=sys.stderr)\nsys.exit(1)\n");
+    fixture.install();
+    fixture.success(&["engines", "enable", "fixture", "--trust"]);
+    fixture.success(&["remote", "off"]);
+    let output = fixture.run(&["offline query"]);
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("fixture: failed"), "{diagnostic}");
+    assert!(!diagnostic.contains("PRIVATE_MARKER"));
+}
+
 impl Fixture {
     /// Write a declarative package whose program runs only through an explicit engine test.
     fn new(script: &str) -> Self {

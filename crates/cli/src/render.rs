@@ -1,6 +1,10 @@
 //! Render engine responses as compact terminal text or machine-readable JSON.
 
-use search::{discovery::Response, fetch::Fetched, index::Hit};
+use search::{
+    discovery::{ProviderStatus, Response},
+    fetch::Fetched,
+    index::Hit,
+};
 
 /// Print any serializable response as JSON; return a process-style status.
 pub fn json<T: serde::Serialize>(value: &T) -> i32 {
@@ -27,6 +31,25 @@ pub fn search(response: &Response) -> i32 {
         response.results.len(),
         response.duration_ms
     );
+    for provider in &response.providers {
+        if provider.status != ProviderStatus::Ok {
+            let status = match provider.status {
+                ProviderStatus::Error => "failed",
+                ProviderStatus::Timeout => "timed out",
+                ProviderStatus::Cancelled => "cancelled",
+                ProviderStatus::Ok => continue,
+            };
+            eprintln!(
+                "{}: {status}{}",
+                provider.name,
+                provider
+                    .error
+                    .as_ref()
+                    .map(|error| format!(": {error}"))
+                    .unwrap_or_default()
+            );
+        }
+    }
     0
 }
 

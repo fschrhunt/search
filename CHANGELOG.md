@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve literal square brackets in fetched code and prose while continuing to
+  remove Markdown link/image targets; array indexing no longer loses its brackets.
+- Show failed, timed-out, and cancelled engines in terminal search output instead
+  of presenting their failure as an unexplained empty result set.
 - Document language-independent executable engines with a complete offline starter,
   declared runtime/credential setup, and native-binary packaging guidance.
 - Replace special built-in engines with installable packages under `crates/engines`,
