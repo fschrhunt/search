@@ -24,10 +24,10 @@ scripts/release.sh v0.2.0    # after merging it: checks CI passed on main, then 
 
 ## Who can write to main
 
-Only the `formula` job. It runs in the `release` environment, which only `v*`
-tags can use, and pushes with that environment's `RELEASE_DEPLOY_KEY` secret: a
-deploy key that main's ruleset lets past its pull request rule. Nothing else in
-the repository can push to main.
+The `formula` job has the `RELEASE_DEPLOY_KEY` write credential and runs in the
+`release` environment, which only `v*` tags can use. To restrict direct updates to
+main, configure branch protection and explicitly allow this deploy key. Without
+that policy, repository write access governs who can push.
 
 Setting it up, or replacing the key, takes an admin of the repository:
 
@@ -35,7 +35,8 @@ Setting it up, or replacing the key, takes an admin of the repository:
 2. Make a key with `ssh-keygen -t ed25519 -N "" -f key` in a temporary folder.
 3. Add `key.pub` as a deploy key with write access, and `key` as the environment's
    `RELEASE_DEPLOY_KEY` secret; then delete both files.
-4. Add deploy keys to the bypass list of main's ruleset.
+4. Configure main's protection policy to allow this deploy key to update the
+   formula.
 
 ## Where people get it
 
