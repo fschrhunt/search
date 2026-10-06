@@ -93,13 +93,13 @@ impl FocusedPage {
         }
     }
 
-    /// Return query-focused excerpts instead of duplicating the whole page.
+    /// Return matching excerpts, or bounded page text when no passage matches.
     fn build(mut page: Page, query: &str, budget: usize) -> Self {
         if query.trim().is_empty() || page.text.is_empty() {
             return Self::whole(page, budget);
         }
         let found = passages(&page.text, query, budget);
-        if found.is_empty() {
+        if !found.iter().any(|passage| passage.score > 0.0) {
             return Self::whole(page, budget);
         }
         page.text = String::new();
@@ -300,6 +300,14 @@ mod tests {
         let page = FocusedPage::build(fetched("abcdef"), "", 3);
         assert_eq!(page.page.text, "abc");
         assert_eq!(page.page.truncated, Some(true));
+    }
+
+    #[test]
+    fn an_unmatched_focus_returns_bounded_text_not_a_matching_passage() {
+        let page = FocusedPage::build(fetched("Readable page text."), "unmatched", 8);
+        assert_eq!(page.page.text, "Readable");
+        assert_eq!(page.page.truncated, Some(true));
+        assert!(page.passages.is_none());
     }
 
     #[tokio::test]

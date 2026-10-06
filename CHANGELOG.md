@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Focused fetches with no matching passages return bounded page text rather than
+  labelling the opening as a match; preserve truncation metadata for that fallback.
 - **Breaking Rust API:** consolidate into one root `search` package and library,
   with the `search` CLI binary. Import `search::core::{Search, Config, Query,
   Answer, Page, Link}`, `search::engines::{Engine, Pool}` and package APIs,

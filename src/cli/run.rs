@@ -110,7 +110,7 @@ async fn fetch_command(
         if let Some(focus) = query.as_deref().filter(|query| !query.trim().is_empty()) {
             let budget = max_characters.unwrap_or(crate::core::text::DEFAULT_BUDGET);
             let found = crate::core::text::select(&result.text, focus, budget);
-            if found.is_empty() {
+            if !found.iter().any(|passage| passage.score > 0.0) {
                 if result.text.chars().count() > budget {
                     result.truncated = Some(true);
                 }
