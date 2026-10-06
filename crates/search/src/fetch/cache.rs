@@ -71,10 +71,10 @@ mod tests {
 
     #[test]
     fn a_fresh_entry_is_returned_and_expiry_clears_it() {
-        let cache = TtlCache::new(Duration::from_millis(1));
+        let cache = TtlCache::new(Duration::from_millis(100));
         cache.put("k", &fetched());
         assert!(cache.get("k").is_some());
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(150));
         assert!(cache.get("k").is_none());
     }
 }
