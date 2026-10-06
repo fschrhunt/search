@@ -50,7 +50,7 @@ pub struct SearchArgs {
     /// Maximum results per query (default 10, max 50).
     #[serde(default)]
     pub limit: Option<usize>,
-    /// Restrict to specific providers, such as "brave" or "wikipedia".
+    /// Restrict to enabled engine package IDs, such as "mwmbl" or "searxng".
     #[serde(default)]
     pub providers: Option<Vec<String>>,
 }
@@ -343,17 +343,37 @@ mod tests {
         assert_eq!(structured, Some(serde_json::json!({"ok": true})));
     }
 
-    /// Tool validation must use the configured registry, not a built-in name list.
+    /// Tool validation must use enabled installed packages, not a fixed name list.
     #[tokio::test]
     async fn web_search_accepts_custom_engine_selection() -> Result<(), Box<dyn std::error::Error>>
     {
-        let config: search::Config = serde_json::from_value(serde_json::json!({
+        let root = std::env::temp_dir().join(format!("search-mcp-engine-{}", uuid_for_test()));
+        let source = root.join("source");
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&source)?;
+        std::fs::write(
+            source.join("engine.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1, "id": "custom", "version": "1.0.0", "description": "MCP fixture",
+                "adapter": {
+                    "type": "command", "command": "python3", "args": ["-c",
+                        "import json,sys; r=json.load(sys.stdin); json.dump({'results':[{'title':r['query'],'url':'https://example.com/'}]},sys.stdout)"]
+                }
+            }))?,
+        )?;
+        let home = root.join("home");
+        search_engines::install_local(&home, &source)?;
+        let mut config: search::Config = serde_json::from_value(serde_json::json!({
             "index": {"enabled": false},
-            "engines": {"only": ["custom"], "custom": {"custom": {
-                "type": "command", "command": "python3", "args": ["-c",
-                    "import json,sys; r=json.load(sys.stdin); json.dump({'results':[{'title':r['query'],'url':'https://example.com/'}]},sys.stdout)"]
-            }}}
+            "engines": {"use": ["custom"]}
         }))?;
+        config.home = home;
         let server = McpServer::new(Arc::new(Search::open(config)?));
         let answer = server
             .web_search(Parameters(SearchArgs {
@@ -372,6 +392,19 @@ mod tests {
             answer.pointer("/queries/0/results/0/providers"),
             Some(&serde_json::json!(["custom"]))
         );
+        std::fs::remove_dir_all(root)?;
         Ok(())
+    }
+
+    /// A per-process nanosecond suffix isolates this one filesystem fixture without another dependency.
+    fn uuid_for_test() -> String {
+        format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )
     }
 }

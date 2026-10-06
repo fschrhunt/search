@@ -1,5 +1,11 @@
 # Install
 
+The binary embeds the maintained engine catalog and one ready-to-use Mwmbl HTTP
+package; installing Search does not require Python or a SearXNG instance. Optional
+executable packages declare their own runtime requirements. Use `search engines
+available` after installation. Packages/settings/data/private trust live under
+`~/.search` or the explicit `SEARCH_HOME`; see [engine packages](engines.md).
+
 search runs on macOS and Linux, arm64 and x86_64. It is one static binary with
 no runtime dependency.
 

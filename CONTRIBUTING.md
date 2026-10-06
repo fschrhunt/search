@@ -41,6 +41,9 @@ The file map and the conventions are in `AGENTS.md`. In short: `crates/search`
 is the engine library and names no terminal, listener, or protocol. The `cli`
 and `mcp` packages depend on it, not the reverse. `search::Search` is the
 in-process API used by both adapters.
+`crates/engines` owns maintained package directories and the local catalog/installer;
+the core and CLI depend on its metadata API. Add engines there using the same
+manifest/adapter contract as user packages, never a special core registration.
 
 ## Branches, commits and pull requests
 
@@ -48,7 +51,7 @@ in-process API used by both adapters.
   `fix/rebinding-guard` or `feat/owned-index`. Never push `main` directly.
 - Conventional commit titles, plain language: `fix(search): close the DNS
   rebinding gap`. The type is `feat`, `fix`, `perf`, `refactor`, `docs`, `test`,
-  or `chore`; the scope is `search`, `cli`, `mcp`, `infra`, or `docs`.
+  or `chore`; the scope is `search`, `engines`, `cli`, `mcp`, `infra`, or `docs`.
 - The title becomes the squash commit on `main`; write it as the one line someone
   reads in `git log`.
 - Use the pull request template. Explain the problem, what changed, and why it

@@ -28,6 +28,11 @@ worth attacking:
 - **The full-text index cannot be driven by query text.** A query that reaches
   SQLite as anything other than a quoted-term MATCH expression is a
   vulnerability.
+- **Engine packages are explicitly trusted locally.** A remote execution request
+  must not install programs, change manifests, or configure the host. Package
+  installation must not escape the Search home through traversal or symlinks;
+  metadata inspection must not execute code. HTTP engines must enforce their
+  configured host/DNS guard, independent of page-fetching permissions.
 
 ## What is not a vulnerability
 
@@ -39,3 +44,8 @@ worth attacking:
   network and paired-device trust.
 - `fetch.allow_private_networks: true` letting the fetcher reach private addresses. That setting
   is documented as disabling the guard, for tests and air-gapped mirrors only.
+- An explicitly trusted executable engine accessing files or network resources
+  as its host user. These programs are not sandboxed; declared environment
+  credentials reduce accidental exposure but do not isolate the filesystem.
+- A configured HTTP engine's explicit `allow_private_networks: true` reaching a
+  private search endpoint. This does not disable the separate page-fetch guard.

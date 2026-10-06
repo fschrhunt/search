@@ -18,18 +18,25 @@ prod_sources() {
     find crates -path '*/src/*.rs' -o -path '*/src/*/*.rs' 2>/dev/null
 }
 
-# 1. Network surface. search talks to its discovery providers and the pages a
-#    caller asks it to fetch, plus operator-configured adapter endpoints. A new
-#    built-in means a new host user queries can reach — add it here deliberately
-#    or the build fails. Custom HTTP adapters use the SSRF guard; executable
-#    adapters are deliberately trusted host programs, not sandboxed. Hosts
+# 1. Network surface. Search talks to installed engine packages and the pages a
+#    caller asks it to fetch. Shipped package hosts are audited alongside Rust
+#    call sites. Operator-configured HTTP adapters use the SSRF guard; executable
+#    packages are deliberately trusted host programs, not sandboxed. Hosts
 #    named only in a comment (a doc example, an injection illustration) are not
 #    call sites and are skipped.
-allowed_hosts="index.crates.io crates.io static.crates.io search.brave.com old-search.marginalia.nu api.mwmbl.org en.wikipedia.org hn.algolia.com news.ycombinator.com api.stackexchange.com export.arxiv.org example.com example.invalid localhost 127.0.0.1 0.0.0.0 github.com"
+allowed_hosts="index.crates.io crates.io static.crates.io search.brave.com old-search.marginalia.nu api.mwmbl.org en.wikipedia.org hn.algolia.com news.ycombinator.com api.stackexchange.com export.arxiv.org duckduckgo.com html.duckduckgo.com example.com example.invalid localhost 127.0.0.1 0.0.0.0 github.com"
 found_hosts=$(
     for f in $(prod_sources); do
         awk '/^#\[cfg\(test\)\]/ { exit } /^[[:space:]]*(\/\/|\*)/ { next } { print }' "$f"
-    done | grep -ohE 'https?://[A-Za-z0-9.:-]+' | sed -E 's#https?://##' | sort -u
+    done
+    for package in crates/engines/*; do
+        [ -f "$package/engine.json" ] || continue
+        for f in "$package/engine.json" "$package"/*.py; do
+            [ ! -f "$f" ] || cat "$f"
+        done
+    done
+    )
+found_hosts=$(printf '%s\n' "$found_hosts" | grep -ohE 'https?://[A-Za-z0-9.:-]+' | sed -E 's#https?://##' | sort -u
 )
 for host in $found_hosts; do
     case " $allowed_hosts " in
@@ -82,6 +89,8 @@ grep -q 'GuardedResolver' "$adapters" || bad "custom HTTP adapters no longer gua
 grep -q 'Policy::none()' "$adapters" || bad "custom HTTP adapters may follow redirects"
 grep -q 'no_proxy()' "$adapters" || bad "custom HTTP adapters may use environment proxies"
 grep -q 'kill_on_drop(true)' "$adapters" || bad "cancelled executable adapters may keep running"
+grep -q 'env_clear()' "$adapters" || bad "executable engines inherit undeclared host credentials"
+[ ! -f crates/search/src/discovery/web.rs ] || bad "special built-in engine implementations remain in the core"
 
 # 5. Paired HTTPS must wrap execution routes, including MCP. Pairing is the
 #    only public admission; device hashes are reloaded on every request.

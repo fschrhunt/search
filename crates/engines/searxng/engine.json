@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "searxng",
+  "version": "1.0.0",
+  "description": "Optional SearXNG JSON endpoint. Configure the full /search URL; the instance must allow JSON output.",
+  "adapter": {
+    "type": "http",
+    "url": "",
+    "query_param": "q",
+    "params": {
+      "format": "json"
+    },
+    "results_pointer": "/results",
+    "title_pointer": "/title",
+    "url_pointer": "/url",
+    "snippet_pointer": "/content"
+  },
+  "required": [
+    "url"
+  ],
+  "files": [],
+  "executables": [],
+  "requires": []
+}

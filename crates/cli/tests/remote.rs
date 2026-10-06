@@ -1,8 +1,5 @@
 //! Offline end-to-end pairing, exclusive routing, stdio MCP and revocation.
-use search_cli::{
-    remote,
-    trust::{self, Devices, Host, Profiles, RemoteCredential},
-};
+use search_cli::trust::{self, Devices, Host, Profiles, RemoteCredential};
 use search_mcp::backend::{self, Backend, Operation, Remote};
 use std::{path::PathBuf, sync::Arc};
 
@@ -25,6 +22,7 @@ impl Fixture {
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let config = search::Config {
+            home: root.clone(),
             dir: root.clone(),
             address: address.to_string(),
             engines: search::config::EngineSettings {
@@ -142,14 +140,16 @@ async fn pairing_trust_reuse_and_revoke_over_https() {
     )
     .unwrap();
     let binary = env!("CARGO_BIN_EXE_search");
-    let devices = std::process::Command::new(binary)
+    let devices = local_command(binary, &fixture.root)
+        .env("DIR", fixture.root.join("unrelated-corpus"))
         .args(["devices", "-config", host_settings.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(devices.status.success());
     assert!(String::from_utf8_lossy(&devices.stdout).contains(&profile.device));
     assert!(!String::from_utf8_lossy(&devices.stdout).contains(&profile.secret));
-    assert!(std::process::Command::new(binary)
+    assert!(!fixture.root.join("unrelated-corpus").exists());
+    assert!(local_command(binary, &fixture.root)
         .args([
             "revoke",
             &profile.device,
@@ -187,10 +187,10 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
     )
     .unwrap();
     let config = Some(config_path.to_string_lossy().into_owned());
-    let path = remote::storage(config.clone()).unwrap();
+    let path = trust::dir(&client_root).unwrap();
     let binary = env!("CARGO_BIN_EXE_search");
     let certificate = fixture.host.path.join("host.pem");
-    let mut pairing = std::process::Command::new(binary)
+    let mut pairing = local_command(binary, &client_root)
         .args([
             "remote",
             "pair",
@@ -216,7 +216,7 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
     let profiles: Profiles = trust::read(&path.join("remotes.json")).unwrap();
     assert!(profiles.selected.is_none());
     assert!(!String::from_utf8_lossy(&paired.stdout).contains(&profiles.remotes["home"].secret));
-    assert!(std::process::Command::new(binary)
+    assert!(local_command(binary, &client_root)
         .args([
             "remote",
             "use",
@@ -228,7 +228,9 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
         .unwrap()
         .status
         .success());
-    let backend = remote::selected(config.clone()).unwrap().unwrap();
+    let profiles: Profiles = trust::read(&path.join("remotes.json")).unwrap();
+    let backend =
+        Backend::remote(profiles.remotes[profiles.selected.as_ref().unwrap()].clone()).unwrap();
     let response = backend
         .search(search::Query {
             text: "needle".into(),
@@ -252,7 +254,7 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
         .unwrap();
     assert!(pages[0].error.is_some());
     assert_eq!(backend.execute(Operation::Refresh).await.unwrap(), 0);
-    let output = std::process::Command::new(binary)
+    let output = local_command(binary, &client_root)
         .args([
             "index",
             "needle",
@@ -266,7 +268,7 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("Remote needle"));
     assert!(!client_root.join("search.db").exists());
     // Speak JSON-RPC to the real harness-facing stdio transport.
-    let mut child = std::process::Command::new(binary)
+    let mut child = local_command(binary, &client_root)
         .args(["stdio", "-config", config.as_deref().unwrap()])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -304,20 +306,20 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
     drop(stdin);
     child.kill().unwrap();
     child.wait().unwrap();
-    let output = std::process::Command::new(binary)
+    let output = local_command(binary, &client_root)
         .args(["refresh", "-config", config.as_deref().unwrap()])
         .output()
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("no local fallback"));
     // Explicitly selecting local execution works without any authentication.
-    assert!(std::process::Command::new(binary)
+    assert!(local_command(binary, &client_root)
         .args(["remote", "off", "-config", config.as_deref().unwrap()])
         .output()
         .unwrap()
         .status
         .success());
-    let local = std::process::Command::new(binary)
+    let local = local_command(binary, &client_root)
         .args([
             "index",
             "needle",
@@ -348,6 +350,17 @@ fn store_fixture(store: &search::index::Store) {
                 .as_secs() as i64,
         })
         .unwrap();
+}
+
+/// Keep each CLI subprocess's home isolated without mutating the test runner environment.
+fn local_command(binary: &str, home: &std::path::Path) -> std::process::Command {
+    let mut command = std::process::Command::new(binary);
+    command
+        .env("SEARCH_HOME", home)
+        .env_remove("CONFIG")
+        .env_remove("DIR")
+        .env_remove("ADDRESS");
+    command
 }
 
 /// Even a redirect to a trusted host must never relay a device credential.
@@ -423,7 +436,7 @@ async fn pair_code_renews_a_running_host_with_persisted_attempts() {
     )
     .unwrap();
     let renew = || {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_search"))
+        let output = local_command(env!("CARGO_BIN_EXE_search"), &fixture.root)
             .args(["pair-code", "-config", settings.to_str().unwrap()])
             .output()
             .unwrap();

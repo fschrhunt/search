@@ -1,4 +1,4 @@
-//! The service's settings: where it listens, where its data lives, how long a
+//! The service's settings: its home, listener and corpus location, how long a
 //! query may run, and which search engines are enabled.
 //!
 //! Omitted fields use safe defaults; explicit values are validated, not replaced.
@@ -10,12 +10,13 @@ mod defaults;
 mod load;
 mod settings;
 
-pub use adapters::BUILTIN_NAMES;
+pub use adapters::{resolve_adapter, resolve_engines, valid_engine_id};
 pub use settings::{
     AdapterSettings, CommandAdapterSettings, Config, EngineSettings, FetchSettings,
     HttpAdapterSettings, IndexSettings, RemoteSettings, SearchSettings, DEFAULT_ADDRESS,
 };
 
 /// Load and validate configuration from `path`, falling back to `CONFIG`
-/// and then the standard location. Environment overrides are applied last.
+/// and then home/settings.json. Environment overrides are applied last.
 pub use load::load;
+pub use load::{home, settings_path, ConfigError};

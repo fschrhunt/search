@@ -11,9 +11,18 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 
-/// Private state is separate from the shareable settings and corpus.
+/// Private state lives under the Search home, independent of corpus overrides.
 pub fn dir(root: &Path) -> Result<PathBuf, String> {
-    fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    let mut root_builder = fs::DirBuilder::new();
+    root_builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        root_builder.mode(0o700);
+    }
+    root_builder
+        .create(root)
+        .map_err(|_| "cannot create Search home".to_string())?;
     let root_meta = fs::symlink_metadata(root).map_err(|e| e.to_string())?;
     if !root_meta.is_dir() {
         return Err("trust root must be a real directory".into());
@@ -22,7 +31,6 @@ pub fn dir(root: &Path) -> Result<PathBuf, String> {
     check_owner(&root_meta)?;
     let path = root.join("trust");
     if !path.exists() {
-        fs::create_dir_all(root).map_err(|e| e.to_string())?;
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -76,7 +84,7 @@ pub fn read<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T, 
         Ok(_) => {
             check(path, false)?;
             serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())
+                .map_err(|_| "invalid private trust file".to_string())
         }
     }
 }

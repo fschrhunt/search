@@ -1,13 +1,11 @@
 //! Discovery: turn a query into ranked, deduplicated results by fanning out to
 //! several independent providers in parallel.
 //!
-//! Built-ins are keyless; configured adapters can resolve credentials from the
+//! Selected packages provide adapters that resolve credentials from the
 //! environment. This module owns no index; `crate::index` is the freshness layer.
 
 mod adapters;
-mod parse;
 mod registry;
-mod web;
 
 pub use registry::{blend, Registry};
 
@@ -157,31 +155,23 @@ impl std::fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
-/// Build the seven built-ins and named adapters under the same selection rules.
+/// Build only already-resolved, explicitly selected package adapters.
 pub(super) fn configured_providers(
     settings: &crate::config::EngineSettings,
 ) -> Vec<Box<dyn Provider>> {
-    let mut providers: Vec<Box<dyn Provider>> = vec![
-        Box::new(web::Brave),
-        Box::new(web::Marginalia),
-        Box::new(web::Mwmbl),
-        Box::new(web::Wikipedia),
-        Box::new(web::HackerNews),
-        Box::new(web::StackExchange),
-        Box::new(web::Arxiv),
-    ];
-    providers.extend(settings.custom.iter().map(|(name, settings)| {
-        Box::new(adapters::CustomProvider::new(
-            name.clone(),
-            settings.clone(),
-        )) as Box<dyn Provider>
-    }));
-    providers
-        .into_iter()
-        .filter(|provider| enabled(settings, provider.name()))
+    if !settings.enabled {
+        return Vec::new();
+    }
+    settings
+        .use_engines
+        .iter()
+        .filter_map(|name| {
+            settings.adapters.get(name).map(|adapter| {
+                Box::new(adapters::AdapterProvider::new(
+                    name.clone(),
+                    adapter.clone(),
+                )) as Box<dyn Provider>
+            })
+        })
         .collect()
-}
-
-fn enabled(settings: &crate::config::EngineSettings, name: &str) -> bool {
-    settings.enabled && (settings.only.is_empty() || settings.only.iter().any(|e| e == name))
 }

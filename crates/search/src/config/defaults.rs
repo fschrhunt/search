@@ -35,6 +35,7 @@ impl Default for Config {
         Config {
             notes: Default::default(),
             address: DEFAULT_ADDRESS.into(),
+            home: super::home().unwrap_or_default(),
             dir: default_dir(),
             user_agent: format!(
                 "search/{} (+https://github.com/fschrhunt/search)",
@@ -64,8 +65,10 @@ impl Default for EngineSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            only: Vec::new(),
-            custom: Default::default(),
+            use_engines: vec![search_engines::DEFAULT_ENGINE.into()],
+            config: Default::default(),
+            adapters: Default::default(),
+            leases: Default::default(),
         }
     }
 }
@@ -108,13 +111,9 @@ fn secs(n: u64) -> u64 {
     Duration::from_secs(n).as_millis() as u64
 }
 
-/// `~/.local/share/search`, or the working dir when there is no home.
+/// The corpus belongs to the Search home; an invalid home stays invalid.
 fn default_dir() -> std::path::PathBuf {
-    match std::env::var_os("HOME") {
-        Some(home) => std::path::PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("search"),
-        None => std::path::PathBuf::from("data"),
-    }
+    super::home()
+        .map(|home| home.join("data"))
+        .unwrap_or_default()
 }

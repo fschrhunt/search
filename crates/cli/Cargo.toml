@@ -21,6 +21,7 @@ path = "src/main.rs"
 [dependencies]
 search.workspace = true
 search_mcp.workspace = true
+search_engines.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "io-std", "net"] }

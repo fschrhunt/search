@@ -4,15 +4,15 @@
 //! human and script surface; `serve` is the HTTP and MCP surface; a bare
 //! `search` with no query is the stdio MCP surface a harness spawns. Keeping
 //! "no arguments" as MCP means an existing harness keeps working while a person
-//! gets a real search command. `engines` diagnoses local adapters without corpus access.
+//! gets a real search command. `engines` manages local packages without corpus access.
 
 /// One parsed command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// Inspect or test the local host's configured engine adapters without opening its index.
+    /// Manage or explicitly test local engine packages without opening the index.
     Engines {
-        name: Option<String>,
-        query: Option<String>,
+        action: String,
+        args: Vec<String>,
         config: Option<String>,
     },
     /// Serve MCP over stdio (the default with no arguments, and what a harness
@@ -147,9 +147,15 @@ Usage:
   search fetch URL... [flags]  read pages as clean text
   search index QUERY [flags]   search only the selected corpus
   search refresh [flags]       refresh stale configured index hosts
-  search engines list [-config PATH]           list enabled local engines
-  search engines test NAME QUERY [-config PATH] test one local engine (JSON)
-    Use test NAME [-config PATH] -- QUERY for queries starting with a hyphen.
+  search engines available/list [-config PATH]  inspect catalog/installed packages
+  search engines install ID|./PATH              install without enabling
+  search engines configure NAME [KEY VALUE]     configure direct adapter fields
+  search engines enable NAME [--trust]          activate (commands require trust)
+  search engines disable/update/remove NAME     manage local packages
+  search engines test NAME QUERY                explicitly execute one engine (JSON)
+    Engine commands always run locally; SEARCH_HOME overrides ~/.search.
+    All accept -config/--config PATH. Use -- before a hyphen-prefixed value/query.
+    Configuration values are operator-owned; use env/header_env for secrets.
   search serve [flags]         serve the JSON API and MCP over HTTP
   search                       serve MCP over stdio (what an agent spawns)
   search remote pair NAME HTTPS_URL CERT_FILE SHA256  pair (code from stdin)
@@ -162,14 +168,14 @@ Usage:
 Serve flags:
   -address HOST:PORT   paired HTTPS listener (default 127.0.0.1:8642)
   -hostname NAME      certificate name clients connect to (for wildcard binds)
-  -dir PATH           local corpus and private trust storage
+  -dir PATH           local corpus directory (trust stays under SEARCH_HOME)
   -config PATH        local settings
 
 Search flags:
   -limit N       results to return (default 10)
   -json          print JSON instead of text
   -providers A,B restrict to these providers
-  -config PATH   settings file (default $CONFIG or ~/.config/search/settings.json)
+  -config PATH   settings file (default $CONFIG or $SEARCH_HOME/settings.json)
 
 Fetch flags:
   -query TEXT        return only the passages matching TEXT
@@ -183,10 +189,12 @@ Index flags:
   -config PATH   JSON config"
 }
 
-/// Parse local adapter diagnostics; query words may include flags after `--`.
+/// Parse package commands, extracting settings flags before literal `--` arguments.
 fn parse_engines<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String> {
     let mut args = args.into_iter();
-    let action = args.next().ok_or("expected engines list or test")?;
+    let action = args
+        .next()
+        .ok_or("expected an engines command; see search help")?;
     let mut config = None;
     let mut values = Vec::new();
     let mut literal = false;
@@ -196,32 +204,40 @@ fn parse_engines<I: IntoIterator<Item = String>>(args: I) -> Result<Command, Str
             "-config" | "--config" if !literal => {
                 config = Some(args.next().ok_or("missing value for -config")?);
             }
+            "--trust" if !literal && action == "enable" => values.push(arg),
             flag if !literal && flag.starts_with('-') => {
-                return Err(format!("unknown flag {flag:?}"));
+                return Err(format!("unknown engine flag {flag:?}"));
             }
             _ => values.push(arg),
         }
     }
-    match action.as_str() {
-        "list" if values.is_empty() => Ok(Command::Engines {
-            name: None,
-            query: None,
-            config,
-        }),
-        "test" if values.len() >= 2 => {
-            let name = values.remove(0);
-            let query = values.join(" ");
-            if query.trim().is_empty() {
-                return Err("engine test needs a nonempty query".into());
-            }
-            Ok(Command::Engines {
-                name: Some(name),
-                query: Some(query),
-                config,
-            })
+    let valid = match action.as_str() {
+        "available" | "list" => values.is_empty(),
+        "install" | "update" | "remove" | "disable" => values.len() == 1,
+        "configure" => values.len() == 1 || values.len() == 3,
+        "enable" => {
+            values
+                .iter()
+                .filter(|arg| arg.as_str() != "--trust")
+                .count()
+                == 1
+                && values
+                    .iter()
+                    .filter(|arg| arg.as_str() == "--trust")
+                    .count()
+                    <= 1
         }
-        _ => Err("expected engines list or engines test NAME QUERY [-config PATH]".into()),
+        "test" => values.len() >= 2 && !values.iter().skip(1).all(|s| s.trim().is_empty()),
+        _ => false,
+    };
+    if !valid {
+        return Err("invalid engines command or arguments; see search help".into());
     }
+    Ok(Command::Engines {
+        action,
+        args: values,
+        config,
+    })
 }
 
 fn parse_config_flag<I: IntoIterator<Item = String>>(args: I) -> Result<Option<String>, String> {
@@ -365,6 +381,9 @@ fn parse_serve_flags<I: IntoIterator<Item = String>>(args: I) -> Result<ServeFla
             "-address" | "--address" => {
                 flags.address = Some(args.next().ok_or("missing value for -address")?)
             }
+            "-hostname" | "--hostname" => {
+                flags.hostname = Some(args.next().ok_or("missing value for -hostname")?)
+            }
             "-dir" | "--dir" => flags.dir = Some(args.next().ok_or("missing value for -dir")?),
             other => return Err(format!("unknown flag {other:?}")),
         }
@@ -390,45 +409,36 @@ mod tests {
     }
 
     #[test]
-    fn engine_diagnostics_require_a_name_and_query_for_test() {
-        assert_eq!(
-            parse(args(&[
-                "engines", "test", "custom", "hello", "world", "-config", "x.json"
-            ]))
-            .unwrap(),
-            Command::Engines {
-                name: Some("custom".into()),
-                query: Some("hello world".into()),
-                config: Some("x.json".into())
-            }
-        );
-        assert_eq!(
-            parse(args(&["engines", "list"])).unwrap(),
-            Command::Engines {
-                name: None,
-                query: None,
-                config: None
-            }
-        );
-        assert!(parse(args(&["engines", "test", "custom"])).is_err());
-        assert!(parse(args(&["engines", "list", "custom"])).is_err());
+    fn engine_commands_extract_config_and_preserve_literal_query() {
         assert_eq!(
             parse(args(&[
                 "engines",
                 "test",
-                "custom",
-                "-config",
+                "fixture",
+                "--config",
                 "x.json",
                 "--",
-                "-site:example.com rust"
+                "-site:example.com",
+                "rust"
             ]))
             .unwrap(),
             Command::Engines {
-                name: Some("custom".into()),
-                query: Some("-site:example.com rust".into()),
+                action: "test".into(),
+                args: vec!["fixture".into(), "-site:example.com".into(), "rust".into()],
                 config: Some("x.json".into())
             }
         );
+        for values in [
+            vec!["engines", "test", "fixture"],
+            vec!["engines", "list", "fixture"],
+            vec!["engines", "install", "fixture", "--trust"],
+            vec!["engines", "configure", "fixture", "url"],
+            vec!["engines", "enable", "fixture", "--trust", "--trust"],
+            vec!["engines", "list", "--home", "/tmp"],
+        ] {
+            assert!(parse(args(&values)).is_err());
+        }
+        assert!(parse(args(&["engines", "enable", "fixture", "--trust"])).is_ok());
     }
 
     #[test]
@@ -461,6 +471,17 @@ mod tests {
                 dir: Some("/tmp/x".into()),
             }
         );
+    }
+
+    #[test]
+    fn serve_accepts_both_hostname_flags_and_requires_a_value() {
+        for flag in ["-hostname", "--hostname"] {
+            assert!(
+                matches!(parse(args(&["serve", flag, "search.example"])).unwrap(),
+                Command::Serve { hostname: Some(name), .. } if name == "search.example")
+            );
+            assert!(parse(args(&["serve", flag])).is_err());
+        }
     }
 
     #[test]
