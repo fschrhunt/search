@@ -8,7 +8,7 @@
 
 mod cache;
 mod extract;
-mod guard;
+pub(crate) mod guard;
 
 use std::time::Duration;
 

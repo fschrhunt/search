@@ -1,14 +1,20 @@
 //! The command line: what `search` accepts and how it dispatches.
 //!
-//! The verbs are the four surfaces the project offers. `search QUERY` is the
+//! `search QUERY` is the
 //! human and script surface; `serve` is the HTTP and MCP surface; a bare
 //! `search` with no query is the stdio MCP surface a harness spawns. Keeping
 //! "no arguments" as MCP means an existing harness keeps working while a person
-//! gets a real search command.
+//! gets a real search command. `engines` diagnoses local adapters without corpus access.
 
 /// One parsed command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    /// Inspect or test the local host's configured engine adapters without opening its index.
+    Engines {
+        name: Option<String>,
+        query: Option<String>,
+        config: Option<String>,
+    },
     /// Serve MCP over stdio (the default with no arguments, and what a harness
     /// invokes).
     Stdio { config: Option<String> },
@@ -93,6 +99,10 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
                 config: parse_config_flag(args)?,
             })
         }
+        Some("engines") => {
+            let _ = args.next();
+            parse_engines(args)
+        }
         Some("remote") | Some("devices") | Some("revoke") | Some("pair-code") => {
             let verb = args.next().ok_or("missing command")?;
             let action = if verb == "remote" {
@@ -137,6 +147,9 @@ Usage:
   search fetch URL... [flags]  read pages as clean text
   search index QUERY [flags]   search only the selected corpus
   search refresh [flags]       refresh stale configured index hosts
+  search engines list [-config PATH]           list enabled local engines
+  search engines test NAME QUERY [-config PATH] test one local engine (JSON)
+    Use test NAME [-config PATH] -- QUERY for queries starting with a hyphen.
   search serve [flags]         serve the JSON API and MCP over HTTP
   search                       serve MCP over stdio (what an agent spawns)
   search remote pair NAME HTTPS_URL CERT_FILE SHA256  pair (code from stdin)
@@ -168,6 +181,47 @@ Index flags:
   -limit N       results to return (default 10)
   -json          print JSON instead of text
   -config PATH   JSON config"
+}
+
+/// Parse local adapter diagnostics; query words may include flags after `--`.
+fn parse_engines<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String> {
+    let mut args = args.into_iter();
+    let action = args.next().ok_or("expected engines list or test")?;
+    let mut config = None;
+    let mut values = Vec::new();
+    let mut literal = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--" if !literal => literal = true,
+            "-config" | "--config" if !literal => {
+                config = Some(args.next().ok_or("missing value for -config")?);
+            }
+            flag if !literal && flag.starts_with('-') => {
+                return Err(format!("unknown flag {flag:?}"));
+            }
+            _ => values.push(arg),
+        }
+    }
+    match action.as_str() {
+        "list" if values.is_empty() => Ok(Command::Engines {
+            name: None,
+            query: None,
+            config,
+        }),
+        "test" if values.len() >= 2 => {
+            let name = values.remove(0);
+            let query = values.join(" ");
+            if query.trim().is_empty() {
+                return Err("engine test needs a nonempty query".into());
+            }
+            Ok(Command::Engines {
+                name: Some(name),
+                query: Some(query),
+                config,
+            })
+        }
+        _ => Err("expected engines list or engines test NAME QUERY [-config PATH]".into()),
+    }
 }
 
 fn parse_config_flag<I: IntoIterator<Item = String>>(args: I) -> Result<Option<String>, String> {
@@ -333,6 +387,48 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn engine_diagnostics_require_a_name_and_query_for_test() {
+        assert_eq!(
+            parse(args(&[
+                "engines", "test", "custom", "hello", "world", "-config", "x.json"
+            ]))
+            .unwrap(),
+            Command::Engines {
+                name: Some("custom".into()),
+                query: Some("hello world".into()),
+                config: Some("x.json".into())
+            }
+        );
+        assert_eq!(
+            parse(args(&["engines", "list"])).unwrap(),
+            Command::Engines {
+                name: None,
+                query: None,
+                config: None
+            }
+        );
+        assert!(parse(args(&["engines", "test", "custom"])).is_err());
+        assert!(parse(args(&["engines", "list", "custom"])).is_err());
+        assert_eq!(
+            parse(args(&[
+                "engines",
+                "test",
+                "custom",
+                "-config",
+                "x.json",
+                "--",
+                "-site:example.com rust"
+            ]))
+            .unwrap(),
+            Command::Engines {
+                name: Some("custom".into()),
+                query: Some("-site:example.com rust".into()),
+                config: Some("x.json".into())
+            }
+        );
     }
 
     #[test]

@@ -82,6 +82,8 @@ refresh interval makes every saved seeded page eligible for explicit refresh.
 - `engines.enabled: false` disables live search engines, leaving local-index
   search available. `engines.only` optionally restricts engines; an empty
   list enables all when `enabled` is true. The current engines are keyless.
+  `engines.custom` adds named HTTP or executable adapters without a rebuild;
+  see [custom engines](engines.md) for the schema, examples, and trust boundary.
 - `remote.timeout` sets the overall deadline for calls to the selected paired
   host. The default is 120000 milliseconds; the connection timeout stays fixed
   at 10000 milliseconds.

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add host-configured JSON HTTP and executable search engines without a rebuild,
+  with bounded output, guarded HTTP endpoints, shared ranking/deadlines, and local
+  `search engines list/test` diagnostics. Document the executable trust boundary.
 - Name user-facing search source settings `engines` and `search.engine_timeout`;
   retain `Provider` for the internal adapter contract, and remove the unused API
   key setting (the current engines are keyless).

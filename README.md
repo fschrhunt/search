@@ -21,6 +21,8 @@
 - **Find:** query several independent providers in parallel and merge their
   results. Keyless providers work out of the box; a failed provider is reported
   rather than hidden.
+  [Add custom engines](docs/engines.md) through JSON HTTP settings or a small
+  executable adapter, without rebuilding Search.
 - **Read:** fetch pages through an SSRF-protected reader that strips page
   clutter. Ask for passages relevant to a query instead of a whole article.
 - **Keep:** fetched pages join a local SQLite full-text index. Search blends

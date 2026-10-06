@@ -38,7 +38,8 @@ pub fn load(path: Option<PathBuf>) -> Result<Config, ConfigError> {
     Ok(config)
 }
 
-/// Only an absent implicit default file means built-in defaults.
+/// Only an absent implicit default file means built-in defaults; parse errors
+/// report locations without quoting potentially sensitive setting values.
 fn read(path: Option<PathBuf>, explicit: bool) -> Result<Config, ConfigError> {
     let Some(path) = path else {
         return Ok(Config::default());
@@ -55,8 +56,15 @@ fn read(path: Option<PathBuf>, explicit: bool) -> Result<Config, ConfigError> {
             )))
         }
     };
-    serde_json::from_str(&text)
-        .map_err(|error| ConfigError::new(format!("parse {}: {error}", path.display())))
+    serde_json::from_str(&text).map_err(|error| {
+        // Deserializer messages may quote header values or credential-bearing URLs.
+        ConfigError::new(format!(
+            "parse {}: invalid settings at line {}, column {}",
+            path.display(),
+            error.line(),
+            error.column()
+        ))
+    })
 }
 
 /// Expand only a leading home component, not shell variables or other users' homes.
@@ -149,6 +157,7 @@ impl Config {
                 "search.local_weight must be finite and positive",
             ));
         }
+        self.engines.validate().map_err(ConfigError::new)?;
         Ok(())
     }
 }
@@ -183,6 +192,16 @@ fn is_hostname(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_diagnostics_do_not_quote_adapter_values() {
+        let path = std::env::temp_dir().join(format!("search-invalid-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, r#"{"engines":{"custom":{"fixture":{"type":"command","command":"tool","max_response_bytes":"credential-secret"}}}}"#).unwrap();
+        let error = read(Some(path.clone()), true).unwrap_err().to_string();
+        std::fs::remove_file(path).unwrap();
+        assert!(error.contains("invalid settings at line"));
+        assert!(!error.contains("credential-secret"));
+    }
 
     #[test]
     fn explicit_missing_settings_fail_instead_of_enabling_defaults() {

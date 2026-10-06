@@ -342,4 +342,36 @@ mod tests {
             .and_then(|result| result.structured_content);
         assert_eq!(structured, Some(serde_json::json!({"ok": true})));
     }
+
+    /// Tool validation must use the configured registry, not a built-in name list.
+    #[tokio::test]
+    async fn web_search_accepts_custom_engine_selection() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let config: search::Config = serde_json::from_value(serde_json::json!({
+            "index": {"enabled": false},
+            "engines": {"only": ["custom"], "custom": {"custom": {
+                "type": "command", "command": "python3", "args": ["-c",
+                    "import json,sys; r=json.load(sys.stdin); json.dump({'results':[{'title':r['query'],'url':'https://example.com/'}]},sys.stdout)"]
+            }}}
+        }))?;
+        let server = McpServer::new(Arc::new(Search::open(config)?));
+        let answer = server
+            .web_search(Parameters(SearchArgs {
+                queries: vec!["custom query".into()],
+                limit: Some(1),
+                providers: Some(vec!["custom".into()]),
+            }))
+            .await?
+            .structured_content
+            .ok_or("missing structured content")?;
+        assert_eq!(
+            answer.pointer("/queries/0/results/0/title"),
+            Some(&serde_json::json!("custom query"))
+        );
+        assert_eq!(
+            answer.pointer("/queries/0/results/0/providers"),
+            Some(&serde_json::json!(["custom"]))
+        );
+        Ok(())
+    }
 }

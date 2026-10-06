@@ -27,6 +27,14 @@ air-gapped mirrors. Never set it on a reachable service.
 
 ## Untrusted content
 
+Custom engine settings are operator-owned, not model-chosen request fields.
+JSON HTTP adapters use the same host and DNS guard as the fetcher, prohibit
+redirects and proxies, and require per-adapter opt-in for private networks.
+Executable adapters are **trusted code running as the host user**, without a
+sandbox; paired devices may trigger them through searches. Their descendants
+are the adapter's responsibility. See [custom engines](engines.md). Credentials
+should come from host environment variables, not shareable settings.
+
 A fetched page is untrusted content, and the cheapest place to hide an
 instruction aimed at a model is text a person never sees. Extraction removes
 visually hidden text — inline `display:none`/`visibility:hidden`/`opacity:0`,

@@ -47,6 +47,11 @@ timed out, or failed.
 
 ## The MCP tools
 
+Custom engines registered on the host work through the same CLI, JSON API, and
+MCP provider selection fields as built-ins. To configure and diagnose adapters,
+see [custom engines](engines.md); `search engines list/test` always diagnoses the
+local machine rather than a selected remote.
+
 - **`web_search`** takes one to five queries, a result limit, and an optional
   provider list. It returns ranked results with title, URL, and snippet. Every
   answer reports, per provider, whether it answered, timed out, or failed.

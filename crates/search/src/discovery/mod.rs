@@ -1,9 +1,10 @@
 //! Discovery: turn a query into ranked, deduplicated results by fanning out to
 //! several independent providers in parallel.
 //!
-//! Each provider is keyless unless a key is configured. This module owns no
-//! index of its own; `crate::index` is the separate freshness layer.
+//! Built-ins are keyless; configured adapters can resolve credentials from the
+//! environment. This module owns no index; `crate::index` is the freshness layer.
 
+mod adapters;
 mod parse;
 mod registry;
 mod web;
@@ -95,20 +96,15 @@ pub type ProviderFuture = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<Vec<Finding>, ProviderError>> + Send>,
 >;
 
-/// A provider that discovers pages for a query. Implementations must return on
-/// cancellation and never block past the deadline they are given. `search`
-/// returns an owned, `'static` future so the registry can spawn it.
+/// Discover pages in upstream rank order. The registry drops each future at its
+/// deadline; implementations must not block the runtime and must release work on
+/// cancellation. An owned, `'static` future lets the registry spawn each query.
 pub trait Provider: Send + Sync + 'static {
     /// The provider's stable identifier, used in configuration and output.
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
 
     /// Run one query. Results are in the provider's own ranking order.
     fn search(&self, query: String, limit: usize) -> ProviderFuture;
-
-    /// Whether this provider is missing a key it needs.
-    fn missing_key(&self) -> bool {
-        false
-    }
 }
 
 /// A provider failure, classified so the registry can report it without
@@ -161,12 +157,11 @@ impl std::fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
-/// The provider families, one constructor per file section in `web.rs` and its
-/// siblings. Kept here so the registry has one list to build from.
-pub(super) fn default_providers(
+/// Build the seven built-ins and named adapters under the same selection rules.
+pub(super) fn configured_providers(
     settings: &crate::config::EngineSettings,
 ) -> Vec<Box<dyn Provider>> {
-    let providers: Vec<Box<dyn Provider>> = vec![
+    let mut providers: Vec<Box<dyn Provider>> = vec![
         Box::new(web::Brave),
         Box::new(web::Marginalia),
         Box::new(web::Mwmbl),
@@ -175,6 +170,12 @@ pub(super) fn default_providers(
         Box::new(web::StackExchange),
         Box::new(web::Arxiv),
     ];
+    providers.extend(settings.custom.iter().map(|(name, settings)| {
+        Box::new(adapters::CustomProvider::new(
+            name.clone(),
+            settings.clone(),
+        )) as Box<dyn Provider>
+    }));
     providers
         .into_iter()
         .filter(|provider| enabled(settings, provider.name()))

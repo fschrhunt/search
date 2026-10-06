@@ -2,15 +2,18 @@
 //! query may run, and which search engines are enabled.
 //!
 //! Omitted fields use safe defaults; explicit values are validated, not replaced.
-//! Credentials belong to the frontend, separate from shareable settings.
+//! Credential values stay in the environment or frontend storage; settings
+//! reference only the variable names needed by discovery adapters.
 
+pub(crate) mod adapters;
 mod defaults;
 mod load;
 mod settings;
 
+pub use adapters::BUILTIN_NAMES;
 pub use settings::{
-    Config, EngineSettings, FetchSettings, IndexSettings, RemoteSettings, SearchSettings,
-    DEFAULT_ADDRESS,
+    AdapterSettings, CommandAdapterSettings, Config, EngineSettings, FetchSettings,
+    HttpAdapterSettings, IndexSettings, RemoteSettings, SearchSettings, DEFAULT_ADDRESS,
 };
 
 /// Load and validate configuration from `path`, falling back to `CONFIG`

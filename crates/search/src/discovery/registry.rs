@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 
 use super::{
-    default_providers, FailureCause, Finding, Provider, ProviderError, ProviderState,
+    configured_providers, FailureCause, Finding, Provider, ProviderError, ProviderState,
     ProviderStatus, Query, Ranked, Response,
 };
 use crate::config::{EngineSettings, SearchSettings};
@@ -23,12 +23,10 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Build the registry from configuration. A provider whose required key is
-    /// missing is dropped rather than failing startup.
+    /// Build selected adapters; missing credentials fail their query, not startup.
     pub fn new(engines: &EngineSettings, search: SearchSettings) -> Self {
-        let providers: Vec<Arc<dyn Provider>> = default_providers(engines)
+        let providers: Vec<Arc<dyn Provider>> = configured_providers(engines)
             .into_iter()
-            .filter(|p| !p.missing_key())
             .map(Arc::from)
             .collect();
         Registry {
@@ -38,8 +36,8 @@ impl Registry {
     }
 
     /// The enabled provider names, for status output.
-    pub fn names(&self) -> Vec<&'static str> {
-        self.providers.iter().map(|p| p.name()).collect()
+    pub fn names(&self) -> Vec<String> {
+        self.providers.iter().map(|p| p.name().to_owned()).collect()
     }
 
     /// The server-side ceiling for one query.
@@ -393,7 +391,7 @@ mod tests {
     }
 
     impl Provider for TestProvider {
-        fn name(&self) -> &'static str {
+        fn name(&self) -> &str {
             "test"
         }
 

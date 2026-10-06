@@ -19,8 +19,10 @@ prod_sources() {
 }
 
 # 1. Network surface. search talks to its discovery providers and the pages a
-#    caller asks it to fetch, and nothing else. A new provider means a new host
-#    user queries can reach — add it here deliberately or the build fails. Hosts
+#    caller asks it to fetch, plus operator-configured adapter endpoints. A new
+#    built-in means a new host user queries can reach — add it here deliberately
+#    or the build fails. Custom HTTP adapters use the SSRF guard; executable
+#    adapters are deliberately trusted host programs, not sandboxed. Hosts
 #    named only in a comment (a doc example, an injection illustration) are not
 #    call sites and are skipped.
 allowed_hosts="index.crates.io crates.io static.crates.io search.brave.com old-search.marginalia.nu api.mwmbl.org en.wikipedia.org hn.algolia.com news.ycombinator.com api.stackexchange.com export.arxiv.org example.com example.invalid localhost 127.0.0.1 0.0.0.0 github.com"
@@ -70,6 +72,16 @@ grep -q "metadata.google.internal" "$guard" || bad "the SSRF guard no longer ref
 
 # 4. The fetcher must call the guard before dialing.
 grep -q "guard::check_host" crates/search/src/fetch/mod.rs || bad "the fetcher no longer calls the SSRF guard"
+
+# Custom HTTP destinations are operator-configured but still guarded by default.
+# Commands are trusted host code; direct children must die when a query is cancelled.
+adapters=crates/search/src/discovery/adapters.rs
+[ -f "$adapters" ] || bad "custom engine adapter implementation is missing"
+grep -q 'check_host' "$adapters" || bad "custom HTTP adapters no longer check destination hosts"
+grep -q 'GuardedResolver' "$adapters" || bad "custom HTTP adapters no longer guard DNS at dial time"
+grep -q 'Policy::none()' "$adapters" || bad "custom HTTP adapters may follow redirects"
+grep -q 'no_proxy()' "$adapters" || bad "custom HTTP adapters may use environment proxies"
+grep -q 'kill_on_drop(true)' "$adapters" || bad "cancelled executable adapters may keep running"
 
 # 5. Paired HTTPS must wrap execution routes, including MCP. Pairing is the
 #    only public admission; device hashes are reloaded on every request.

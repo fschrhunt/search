@@ -32,7 +32,8 @@ crates/search/  the engine library (`search`)
   discovery/    the provider fan-out: mod.rs (Finding, Query, Response, the
                 Provider trait), registry.rs (parallel fan-out, per-provider
                 deadlines, reciprocal-rank fusion, URL normalization),
-                parse.rs (defensive HTML scanners), web.rs (the seven providers:
+                parse.rs (defensive HTML scanners), adapters.rs (configured HTTP
+                and executable engines), web.rs (the seven built-ins:
                 brave · marginalia · mwmbl · wikipedia · hackernews ·
                 stackexchange · arxiv — each keyless)
   fetch/        the fetcher: mod.rs (the guarded request, redirect following,
@@ -73,8 +74,9 @@ x             the one repository entry point
   every class of address that can reach infrastructure must be classified
   private, and `check_host` strips IPv6 brackets before parsing an address. The
   guard's tests carry the counterexamples; do not loosen them.
-- **Providers are keyless by default.** A key is read from the environment only
-  when configured. A provider's failure is reported in its `ProviderState`, so an
+- **Built-ins are keyless.** Custom HTTP adapters read credential headers from
+  configured environment variables. Executable adapters are trusted host code,
+  not a sandbox. A provider's failure is reported in its `ProviderState`, so an
   empty answer is never mistaken for a broken one.
 - **Don't hardcode what a user might change.** Timeouts, result counts, the user
   agent, and the enabled providers are read from configuration with built-in

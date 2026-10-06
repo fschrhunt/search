@@ -65,6 +65,7 @@ impl Default for EngineSettings {
         Self {
             enabled: true,
             only: Vec::new(),
+            custom: Default::default(),
         }
     }
 }
