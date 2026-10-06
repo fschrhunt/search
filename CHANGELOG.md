@@ -2,13 +2,19 @@
 
 ## Unreleased
 
+- Add host-configured JSON HTTP and executable search engines without a rebuild,
+  with bounded output, guarded HTTP endpoints, shared ranking/deadlines, and local
+  `search engines list/test` diagnostics. Document the executable trust boundary.
+- Name user-facing search source settings `engines` and `search.engine_timeout`;
+  retain `Provider` for the internal adapter contract, and remove the unused API
+  key setting (the current engines are keyless).
 - Add a true `index.enabled` off switch, explanatory JSON `notes`, and home-path
   expansion. Reject missing explicit config files and invalid zero bounds;
   zero cache/redirect settings disable those features. Bound local lookup by
   the query deadline and require current-user ownership of trust storage.
   Remove the unused search-cache and log-level settings rather than expose
   switches with no effect.
-- Add `providers.enabled` for local-index-only use and configure the paired-host
+- Add `engines.enabled` for local-index-only use and configure the paired-host
   request deadline with `remote.timeout`.
 
 - Add `search pair-code` to renew one-use host pairing codes without restarting.

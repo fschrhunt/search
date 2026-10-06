@@ -12,7 +12,8 @@ crates/search/  the engine (`search`)
   discovery/    the provider fan-out: mod.rs (Finding, Query, Response, the
                 Provider trait), registry.rs (parallel fan-out, per-provider
                 deadlines, reciprocal-rank fusion), parse.rs (HTML scanners),
-                web.rs (the seven providers)
+                 web.rs (the seven built-ins), adapters.rs (configured HTTP
+                 and executable engine adapters)
   fetch/        mod.rs (the guarded request, body caps, indexing), guard.rs (the
                 SSRF guard and the DNS resolver), extract.rs (HTML to text),
                 cache.rs (recent answers)
@@ -31,13 +32,22 @@ crates/cli/   the command and HTTP API package (`cli`; binary `search`)
   remote.rs     local profile selection, device listing and revocation
 ```
 
-The engine stays in-process and protocol-free. CLI and stdio MCP share the
+The engine stays independent of frontend protocols. Its discovery adapters
+support configured JSON HTTP APIs and a versioned JSON subprocess contract;
+the registry treats those and built-ins identically. Adapters discover URLs,
+while the fetcher reads pages and owns indexing. CLI and stdio MCP share the
 adapter's `Backend`: a selected remote is checked before opening any local
 engine, and failures never trigger local execution. The host always opens its
 local engine. Pairing verifies a copied public certificate's fingerprint before
 sending the one-use code; TLS enforces the exact leaf pin plus standard WebPKI
 validation. Host trust stores hashes, client trust stores secrets, and neither
 belongs in engine settings. See [remote hosting](../remote.md).
+
+Custom adapters are installed through host-owned settings, never request input
+or database registration. HTTP adapters reuse the SSRF resolver, refuse redirects
+and proxies, and have independent explicit private-network permission. Executable
+adapters are trusted programs running as the host user; cancellation kills the
+direct child, not arbitrary descendants. See [custom engines](../engines.md).
 
 ## The rules
 

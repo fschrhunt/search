@@ -3,8 +3,7 @@
 //! Brave, Marginalia, and Mwmbl are general web indexes; Wikipedia, Hacker
 //! News, Stack Exchange, and arXiv are verticals that answer programming and
 //! research queries with higher signal than a general crawl. Every provider is
-//! keyless; Brave reads an optional key from the environment but works without
-//! one against its server-rendered page.
+//! keyless; Brave uses its server-rendered page rather than an authenticated API.
 
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -64,7 +63,7 @@ fn parse_json<T: serde::de::DeserializeOwned>(
 pub(super) struct Brave;
 
 impl Provider for Brave {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "brave"
     }
 
@@ -121,7 +120,7 @@ fn parse_brave(html: &str, limit: usize) -> Vec<Finding> {
 pub(super) struct Marginalia;
 
 impl Provider for Marginalia {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "marginalia"
     }
 
@@ -172,7 +171,7 @@ fn parse_marginalia(html: &str, limit: usize) -> Vec<Finding> {
 pub(super) struct Mwmbl;
 
 impl Provider for Mwmbl {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "mwmbl"
     }
 
@@ -233,7 +232,7 @@ fn parse_mwmbl(body: &str, limit: usize) -> Result<Vec<Finding>, ProviderError> 
 pub(super) struct Wikipedia;
 
 impl Provider for Wikipedia {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "wikipedia"
     }
 
@@ -292,7 +291,7 @@ fn parse_wikipedia(body: &str, limit: usize) -> Result<Vec<Finding>, ProviderErr
 pub(super) struct HackerNews;
 
 impl Provider for HackerNews {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "hackernews"
     }
 
@@ -359,7 +358,7 @@ fn parse_hn(body: &str, limit: usize) -> Result<Vec<Finding>, ProviderError> {
 pub(super) struct StackExchange;
 
 impl Provider for StackExchange {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "stackexchange"
     }
 
@@ -413,7 +412,7 @@ fn parse_stackexchange(body: &str, limit: usize) -> Result<Vec<Finding>, Provide
 pub(super) struct Arxiv;
 
 impl Provider for Arxiv {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "arxiv"
     }
 

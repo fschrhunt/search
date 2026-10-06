@@ -11,6 +11,7 @@ are the long form of `search --help` and `README.md`.
 | [Usage](usage.md) | Running the service, the JSON API, and MCP |
 | [Remote hosting](remote.md) | Pair devices and route CLI and stdio MCP |
 | [Configuration](configuration.md) | Every setting, and the defaults |
+| [Custom engines](engines.md) | Add JSON HTTP or executable adapters and diagnose them |
 | [Security](security.md) | The SSRF guard, auth, and how to deploy it safely |
 
 ## Working on it

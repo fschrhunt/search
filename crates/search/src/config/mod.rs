@@ -1,16 +1,19 @@
 //! The service's settings: where it listens, where its data lives, how long a
-//! query may run, and which providers are enabled.
+//! query may run, and which search engines are enabled.
 //!
 //! Omitted fields use safe defaults; explicit values are validated, not replaced.
-//! Credentials belong to the frontend, separate from shareable settings.
+//! Credential values stay in the environment or frontend storage; settings
+//! reference only the variable names needed by discovery adapters.
 
+pub(crate) mod adapters;
 mod defaults;
 mod load;
 mod settings;
 
+pub use adapters::BUILTIN_NAMES;
 pub use settings::{
-    Config, FetchSettings, IndexSettings, ProviderSettings, RemoteSettings, SearchSettings,
-    DEFAULT_ADDRESS,
+    AdapterSettings, CommandAdapterSettings, Config, EngineSettings, FetchSettings,
+    HttpAdapterSettings, IndexSettings, RemoteSettings, SearchSettings, DEFAULT_ADDRESS,
 };
 
 /// Load and validate configuration from `path`, falling back to `CONFIG`

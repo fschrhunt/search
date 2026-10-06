@@ -23,7 +23,7 @@ pub struct Config {
     pub user_agent: String,
     pub search: SearchSettings,
     pub fetch: FetchSettings,
-    pub providers: ProviderSettings,
+    pub engines: EngineSettings,
     pub remote: RemoteSettings,
     pub index: IndexSettings,
 }
@@ -34,8 +34,8 @@ pub struct Config {
 pub struct SearchSettings {
     /// Results returned at most.
     pub max_results: usize,
-    /// Milliseconds one provider may take before it is abandoned.
-    pub provider_timeout: u64,
+    /// Milliseconds one search engine may take before it is abandoned.
+    pub engine_timeout: u64,
     /// Milliseconds allowed for the whole query.
     pub timeout: u64,
     /// Blend weight for a local hit against a borrowed one. Higher favors what
@@ -105,8 +105,8 @@ impl SearchSettings {
             requested.min(maximum)
         }
     }
-    pub fn provider_timeout(&self) -> Duration {
-        Duration::from_millis(self.provider_timeout)
+    pub fn engine_timeout(&self) -> Duration {
+        Duration::from_millis(self.engine_timeout)
     }
     pub fn timeout(&self) -> Duration {
         Duration::from_millis(self.timeout)
@@ -154,16 +154,16 @@ impl IndexSettings {
     }
 }
 
-/// Which providers run, and API keys any of them need.
+/// Which built-in and configured search engines run.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ProviderSettings {
-    /// Enable live web providers. False leaves local-index search available.
+pub struct EngineSettings {
+    /// Enable live web engines. False leaves local-index search available.
     pub enabled: bool,
-    /// Restrict to these provider names; an empty list means all providers when enabled.
+    /// Restrict to these engine names; an empty list means all engines when enabled.
     pub only: Vec<String>,
-    /// Provider name to the environment variable holding its API key.
-    pub api: BTreeMap<String, String>,
+    /// Named HTTP or executable adapters, selected and ranked like built-ins.
+    pub custom: BTreeMap<String, AdapterSettings>,
 }
 
 /// Limits on calls made to the selected paired host.
@@ -178,4 +178,78 @@ impl RemoteSettings {
     pub fn timeout(&self) -> Duration {
         Duration::from_millis(self.timeout)
     }
+}
+
+/// A configured discovery adapter. Credentials are resolved only at query time.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AdapterSettings {
+    Http(HttpAdapterSettings),
+    Command(CommandAdapterSettings),
+}
+
+/// GET-only JSON discovery, with independent private-network permission.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HttpAdapterSettings {
+    pub url: String,
+    #[serde(default = "default_query_param")]
+    pub query_param: String,
+    #[serde(default)]
+    pub limit_param: Option<String>,
+    #[serde(default)]
+    pub params: BTreeMap<String, String>,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// Environment variables supply whole header values, without interpolation.
+    #[serde(default)]
+    pub header_env: BTreeMap<String, String>,
+    #[serde(default = "default_results_pointer")]
+    pub results_pointer: String,
+    #[serde(default = "default_title_pointer")]
+    pub title_pointer: String,
+    #[serde(default = "default_url_pointer")]
+    pub url_pointer: String,
+    #[serde(default = "default_snippet_pointer")]
+    pub snippet_pointer: String,
+    #[serde(default = "default_adapter_cap")]
+    pub max_response_bytes: u64,
+    #[serde(default)]
+    pub allow_private_networks: bool,
+}
+
+/// A directly spawned executable speaking one JSON request and response per query.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandAdapterSettings {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_adapter_cap")]
+    pub max_response_bytes: u64,
+}
+
+/// The default bound on adapter output, independent of page-fetch limits.
+fn default_adapter_cap() -> u64 {
+    1 << 20
+}
+/// Default query parameter and JSON locations match the command response shape.
+fn default_query_param() -> String {
+    "q".into()
+}
+/// Locate the array in the response object.
+fn default_results_pointer() -> String {
+    "/results".into()
+}
+/// Locate a row's title.
+fn default_title_pointer() -> String {
+    "/title".into()
+}
+/// Locate a row's URL.
+fn default_url_pointer() -> String {
+    "/url".into()
+}
+/// Locate a row's optional snippet.
+fn default_snippet_pointer() -> String {
+    "/snippet".into()
 }

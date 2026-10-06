@@ -35,7 +35,7 @@ impl Search {
             &config.user_agent,
         )
         .map_err(SearchError::Client)?;
-        let registry = discovery::Registry::new(&config.providers, config.search.clone());
+        let registry = discovery::Registry::new(&config.engines, config.search.clone());
         Ok(Search {
             registry,
             fetcher,
@@ -121,7 +121,7 @@ impl Search {
     }
 
     /// The enabled provider names, for status output.
-    pub fn provider_names(&self) -> Vec<&'static str> {
+    pub fn provider_names(&self) -> Vec<String> {
         self.registry.names()
     }
 

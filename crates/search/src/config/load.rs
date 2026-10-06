@@ -38,7 +38,8 @@ pub fn load(path: Option<PathBuf>) -> Result<Config, ConfigError> {
     Ok(config)
 }
 
-/// Only an absent implicit default file means built-in defaults.
+/// Only an absent implicit default file means built-in defaults; parse errors
+/// report locations without quoting potentially sensitive setting values.
 fn read(path: Option<PathBuf>, explicit: bool) -> Result<Config, ConfigError> {
     let Some(path) = path else {
         return Ok(Config::default());
@@ -55,8 +56,15 @@ fn read(path: Option<PathBuf>, explicit: bool) -> Result<Config, ConfigError> {
             )))
         }
     };
-    serde_json::from_str(&text)
-        .map_err(|error| ConfigError::new(format!("parse {}: {error}", path.display())))
+    serde_json::from_str(&text).map_err(|error| {
+        // Deserializer messages may quote header values or credential-bearing URLs.
+        ConfigError::new(format!(
+            "parse {}: invalid settings at line {}, column {}",
+            path.display(),
+            error.line(),
+            error.column()
+        ))
+    })
 }
 
 /// Expand only a leading home component, not shell variables or other users' homes.
@@ -99,12 +107,6 @@ fn apply_env(config: &mut Config) {
 }
 
 impl Config {
-    /// Resolve a provider key from its configured environment variable.
-    pub fn resolved_key(&self, provider: &str) -> Option<String> {
-        let var = self.providers.api.get(provider)?;
-        std::env::var(var).ok().filter(|v| !v.is_empty())
-    }
-
     /// Whether the configured address is loopback. Accepts `host:port`, a bare
     /// `:port` (which binds every interface and is therefore NOT loopback), and
     /// `localhost:port`.
@@ -136,7 +138,7 @@ impl Config {
         }
         for (name, value) in [
             ("search.max_results", self.search.max_results as u64),
-            ("search.provider_timeout", self.search.provider_timeout),
+            ("search.engine_timeout", self.search.engine_timeout),
             ("search.timeout", self.search.timeout),
             ("fetch.timeout", self.fetch.timeout),
             ("fetch.max_response_bytes", self.fetch.max_response_bytes),
@@ -155,6 +157,7 @@ impl Config {
                 "search.local_weight must be finite and positive",
             ));
         }
+        self.engines.validate().map_err(ConfigError::new)?;
         Ok(())
     }
 }
@@ -189,6 +192,16 @@ fn is_hostname(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_diagnostics_do_not_quote_adapter_values() {
+        let path = std::env::temp_dir().join(format!("search-invalid-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, r#"{"engines":{"custom":{"fixture":{"type":"command","command":"tool","max_response_bytes":"credential-secret"}}}}"#).unwrap();
+        let error = read(Some(path.clone()), true).unwrap_err().to_string();
+        std::fs::remove_file(path).unwrap();
+        assert!(error.contains("invalid settings at line"));
+        assert!(!error.contains("credential-secret"));
+    }
 
     #[test]
     fn explicit_missing_settings_fail_instead_of_enabling_defaults() {
@@ -257,7 +270,7 @@ mod tests {
     /// Removed credential and location names must not silently load defaults.
     #[test]
     fn legacy_settings_are_rejected() {
-        for field in ["directory", "token", "token_env"] {
+        for field in ["directory", "token", "token_env", "providers"] {
             let json = serde_json::json!({field: "old"});
             assert!(serde_json::from_value::<Config>(json).is_err());
         }
@@ -267,7 +280,7 @@ mod tests {
     #[test]
     fn settings_json_uses_clean_names() {
         let config = serde_json::from_str::<Config>(
-            r#"{"notes":{"search.timeout":"milliseconds"},"search":{"timeout":5000},"index":{"include_in_search":false,"save_fetched_pages":false},"providers":{"only":["brave"],"api":{"brave":"BRAVE_KEY"}}}"#,
+            r#"{"notes":{"search.timeout":"milliseconds"},"search":{"timeout":5000},"index":{"include_in_search":false,"save_fetched_pages":false},"engines":{"only":["brave"]}}"#,
         )
         .ok();
         assert_eq!(
@@ -275,25 +288,18 @@ mod tests {
                 c.index.should_include_in_search(),
                 c.index.should_save_fetched_pages(),
                 c.search.timeout,
-                c.providers.only,
-                c.providers.api.get("brave").cloned(),
+                c.engines.only,
             )),
-            Some((
-                false,
-                false,
-                5000,
-                vec!["brave".into()],
-                Some("BRAVE_KEY".into())
-            ))
+            Some((false, false, 5000, vec!["brave".into()]))
         );
     }
 
     #[test]
-    fn live_providers_can_be_disabled_and_remote_timeout_is_configurable() {
+    fn live_engines_can_be_disabled_and_remote_timeout_is_configurable() {
         let config: Config =
-            serde_json::from_str(r#"{"providers":{"enabled":false},"remote":{"timeout":45000}}"#)
+            serde_json::from_str(r#"{"engines":{"enabled":false},"remote":{"timeout":45000}}"#)
                 .unwrap();
-        assert!(!config.providers.enabled);
+        assert!(!config.engines.enabled);
         assert_eq!(config.remote.timeout(), std::time::Duration::from_secs(45));
         assert!(config.validate().is_ok());
     }

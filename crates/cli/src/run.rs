@@ -11,6 +11,11 @@ use crate::{args::Command, http, stdio};
 /// Run one parsed command. Returns the process exit code.
 pub async fn execute(command: Command) -> i32 {
     match command {
+        Command::Engines {
+            name,
+            query,
+            config,
+        } => engine_command(name, query, config).await,
         Command::Remote {
             action,
             args,
@@ -55,6 +60,45 @@ pub async fn execute(command: Command) -> i32 {
             config,
         } => index_command(query, limit, json, config).await,
         Command::Refresh { config } => refresh_command(config).await,
+    }
+}
+
+/// Diagnose local adapters only, without selecting a remote or touching the corpus.
+async fn engine_command(name: Option<String>, query: Option<String>, path: Option<String>) -> i32 {
+    let mut settings = match config::load(path.map(std::path::PathBuf::from)) {
+        Ok(settings) => settings,
+        Err(error) => return report_error(error.to_string()),
+    };
+    settings.index.enabled = false;
+    if let Some(name) = &name {
+        settings.engines.only = vec![name.clone()];
+    }
+    let service = match Search::open(settings) {
+        Ok(service) => service,
+        Err(error) => return report_error(error.to_string()),
+    };
+    let Some(query) = query else {
+        return crate::render::json(&service.provider_names());
+    };
+    if service.provider_names().is_empty() {
+        return report_error("no engine enabled; check engines.enabled".into());
+    }
+    let response = service
+        .search(search::discovery::Query {
+            text: query,
+            providers: name.into_iter().collect(),
+            ..Default::default()
+        })
+        .await;
+    let failed = response
+        .providers
+        .iter()
+        .any(|state| state.status != search::discovery::ProviderStatus::Ok);
+    let rendered = crate::render::json(&response);
+    if failed {
+        1
+    } else {
+        rendered
     }
 }
 
