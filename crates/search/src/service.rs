@@ -21,7 +21,8 @@ impl Search {
         let store = Arc::new(
             Store::open(&config.data_dir, config.index.clone()).map_err(SearchError::Store)?,
         );
-        let fetcher = Fetcher::new(config.fetch.clone(), Arc::clone(&store), &config.user_agent);
+        let fetcher = Fetcher::new(config.fetch.clone(), Arc::clone(&store), &config.user_agent)
+            .map_err(SearchError::Client)?;
         let registry = discovery::Registry::new(&config.engines, config.search.clone());
         Ok(Search {
             registry,
@@ -40,8 +41,10 @@ impl Search {
         if !self.config.search.should_use_index() {
             return self.registry.search(query).await;
         }
-        let result_limit = query.limit.max(self.config.search.max_results_or_default());
+        let result_limit = self.config.search.result_limit(query.limit);
         let local_limit = result_limit;
+        let mut query = query;
+        query.limit = result_limit;
         // SQLite is synchronous, so do its bounded FTS lookup on the blocking
         // pool while provider requests are in flight.
         let store = Arc::clone(&self.store);
@@ -115,12 +118,14 @@ impl Search {
 #[derive(Debug)]
 pub enum SearchError {
     Store(StoreError),
+    Client(reqwest::Error),
 }
 
 impl std::fmt::Display for SearchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SearchError::Store(error) => write!(f, "open index: {error}"),
+            SearchError::Client(error) => write!(f, "build guarded HTTP client: {error}"),
         }
     }
 }

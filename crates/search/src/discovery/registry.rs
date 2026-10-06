@@ -50,15 +50,11 @@ impl Registry {
     /// Run the query across every selected provider and merge the answers.
     pub async fn search(&self, query: Query) -> Response {
         let started = Instant::now();
-        let limit = if query.limit == 0 {
-            self.settings.max_results_or_default()
-        } else {
-            query.limit
-        };
+        let limit = self.settings.result_limit(query.limit);
         let per_provider = if query.per_provider == 0 {
             limit
         } else {
-            query.per_provider
+            self.settings.result_limit(query.per_provider)
         };
 
         let selected: Vec<Arc<dyn Provider>> = self.select(&query.providers);
@@ -77,25 +73,50 @@ impl Registry {
         let mut collected: Vec<Option<(ProviderState, Vec<Ranked>)>> =
             (0..selected.len()).map(|_| None).collect();
         let mut panicked = Vec::new();
-        while let Some(joined) = set.join_next().await {
-            match joined {
-                // The index is produced by `enumerate` over `selected`, so it is
-                // always in range; `get_mut` keeps that provable rather than
-                // asserted.
-                Ok((index, state, results)) => {
-                    if let Some(slot) = collected.get_mut(index) {
-                        *slot = Some((state, results));
+        let completed = tokio::time::timeout(self.settings.overall_timeout(), async {
+            while let Some(joined) = set.join_next().await {
+                match joined {
+                    // The index is produced by `enumerate` over `selected`, so it is
+                    // always in range; `get_mut` keeps that provable rather than
+                    // asserted.
+                    Ok((index, state, results)) => {
+                        if let Some(slot) = collected.get_mut(index) {
+                            *slot = Some((state, results));
+                        }
+                    }
+                    // A panicking provider must not take the query down; it is
+                    // reported as a failed provider beside the results.
+                    Err(join) => panicked.push(ProviderState {
+                        name: "provider".into(),
+                        status: ProviderStatus::Error,
+                        count: 0,
+                        error: Some(format!("provider task failed: {join}")),
+                        elapsed_ms: 0,
+                    }),
+                }
+            }
+        })
+        .await
+        .is_ok();
+
+        if !completed {
+            set.abort_all();
+            while set.join_next().await.is_some() {}
+            for (index, provider) in selected.iter().enumerate() {
+                if let Some(slot) = collected.get_mut(index) {
+                    if slot.is_none() {
+                        *slot = Some((
+                            ProviderState {
+                                name: provider.name().into(),
+                                status: ProviderStatus::Timeout,
+                                count: 0,
+                                error: Some("provider exceeded the overall search deadline".into()),
+                                elapsed_ms: started.elapsed().as_millis() as u64,
+                            },
+                            Vec::new(),
+                        ));
                     }
                 }
-                // A panicking provider must not take the query down; it is
-                // reported as a failed provider beside the results.
-                Err(join) => panicked.push(ProviderState {
-                    name: "provider".into(),
-                    status: ProviderStatus::Error,
-                    count: 0,
-                    error: Some(format!("provider task failed: {join}")),
-                    elapsed_ms: 0,
-                }),
             }
         }
 
@@ -359,6 +380,105 @@ pub(super) fn normalize_url(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TestProvider {
+        limit: Arc<AtomicUsize>,
+        delay: Duration,
+        count: usize,
+    }
+
+    impl Provider for TestProvider {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        fn search(&self, _query: String, limit: usize) -> super::super::ProviderFuture {
+            self.limit.store(limit, Ordering::SeqCst);
+            let delay = self.delay;
+            let count = self.count;
+            Box::pin(async move {
+                tokio::time::sleep(delay).await;
+                Ok((0..count)
+                    .map(|i| Finding {
+                        title: format!("result {i}"),
+                        url: format!("https://example.com/{i}"),
+                        snippet: None,
+                        providers: vec!["test"],
+                        score: 0.0,
+                    })
+                    .collect())
+            })
+        }
+    }
+
+    fn registry(provider: TestProvider, settings: SearchSettings) -> Registry {
+        Registry {
+            providers: vec![Arc::new(provider)],
+            settings,
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_result_limit_caps_provider_work_and_output() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let settings = SearchSettings {
+            max_results: 2,
+            ..SearchSettings::default()
+        };
+        let registry = registry(
+            TestProvider {
+                limit: Arc::clone(&asked),
+                delay: Duration::ZERO,
+                count: 5,
+            },
+            settings,
+        );
+
+        let response = registry
+            .search(Query {
+                text: "test".into(),
+                limit: 10,
+                per_provider: 100,
+                providers: Vec::new(),
+            })
+            .await;
+
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert_eq!(response.results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn overall_deadline_returns_without_waiting_for_provider_deadline() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let settings = SearchSettings {
+            overall_timeout_ms: 10,
+            max_provider_time_ms: 5_000,
+            ..SearchSettings::default()
+        };
+        let registry = registry(
+            TestProvider {
+                limit: asked,
+                delay: Duration::from_secs(5),
+                count: 0,
+            },
+            settings,
+        );
+
+        let response = registry
+            .search(Query {
+                text: "test".into(),
+                ..Query::default()
+            })
+            .await;
+
+        assert_eq!(response.providers.len(), 1);
+        assert_eq!(response.providers[0].status, ProviderStatus::Timeout);
+        assert_eq!(
+            response.providers[0].error.as_deref(),
+            Some("provider exceeded the overall search deadline")
+        );
+    }
 
     fn ranked(url: &str, provider: &'static str, rank: usize) -> Ranked {
         Ranked {

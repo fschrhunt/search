@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Enforce the configured maximum result count and whole-search deadline, fail startup if the
+  guarded HTTP client cannot be built, and make the fetch-cache expiry test deterministic.
 - Reshaped the workspace around the `search` engine, `cli` executable, and
   optional `mcp` adapter. The engine exposes `search::Search` without an MCP
   dependency.
