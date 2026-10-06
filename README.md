@@ -118,7 +118,7 @@ See the full [configuration reference](docs/configuration.md).
 
 Set `index.enabled` to `false` for no local database access at all. This leaves
 existing indexed pages untouched; paired HTTPS credentials are stored separately.
-Set `providers.enabled` to `false` to run without live web providers, or tune
+Set `engines.enabled` to `false` to run without live web engines, or tune
 `remote.timeout` for slower paired hosts.
 
 To stop blending local pages into web results and stop saving newly fetched

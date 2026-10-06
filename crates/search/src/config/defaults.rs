@@ -3,12 +3,12 @@
 use std::time::Duration;
 
 use super::{
-    Config, FetchSettings, IndexSettings, ProviderSettings, RemoteSettings, SearchSettings,
+    Config, EngineSettings, FetchSettings, IndexSettings, RemoteSettings, SearchSettings,
     DEFAULT_ADDRESS,
 };
 
-/// Seconds a provider may take before it is abandoned.
-pub const DEFAULT_PROVIDER_SECS: u64 = 2;
+/// Seconds a search engine may take before it is abandoned.
+pub const DEFAULT_ENGINE_SECS: u64 = 2;
 /// Seconds the whole fan-out may take.
 pub const DEFAULT_OVERALL_SECS: u64 = 8;
 /// Seconds a fetched page is reused from memory.
@@ -42,7 +42,7 @@ impl Default for Config {
             ),
             search: SearchSettings::default(),
             fetch: FetchSettings::default(),
-            providers: ProviderSettings::default(),
+            engines: EngineSettings::default(),
             remote: RemoteSettings::default(),
             index: IndexSettings::default(),
         }
@@ -53,19 +53,18 @@ impl Default for SearchSettings {
     fn default() -> Self {
         SearchSettings {
             max_results: 10,
-            provider_timeout: secs(DEFAULT_PROVIDER_SECS),
+            engine_timeout: secs(DEFAULT_ENGINE_SECS),
             timeout: secs(DEFAULT_OVERALL_SECS),
             local_weight: DEFAULT_INDEX_WEIGHT,
         }
     }
 }
 
-impl Default for ProviderSettings {
+impl Default for EngineSettings {
     fn default() -> Self {
         Self {
             enabled: true,
             only: Vec::new(),
-            api: Default::default(),
         }
     }
 }

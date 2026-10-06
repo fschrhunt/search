@@ -27,7 +27,7 @@ impl Fixture {
         let config = search::Config {
             dir: root.clone(),
             address: address.to_string(),
-            providers: search::config::ProviderSettings {
+            engines: search::config::EngineSettings {
                 only: vec!["not-a-provider".into()],
                 ..Default::default()
             },
@@ -183,8 +183,7 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
     let config_path = client_root.join("settings.json");
     std::fs::write(
         &config_path,
-        serde_json::json!({"dir": client_root, "providers":{"only":["not-a-provider"]}})
-            .to_string(),
+        serde_json::json!({"dir": client_root, "engines":{"only":["not-a-provider"]}}).to_string(),
     )
     .unwrap();
     let config = Some(config_path.to_string_lossy().into_owned());

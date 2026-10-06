@@ -23,7 +23,7 @@ pub struct Config {
     pub user_agent: String,
     pub search: SearchSettings,
     pub fetch: FetchSettings,
-    pub providers: ProviderSettings,
+    pub engines: EngineSettings,
     pub remote: RemoteSettings,
     pub index: IndexSettings,
 }
@@ -34,8 +34,8 @@ pub struct Config {
 pub struct SearchSettings {
     /// Results returned at most.
     pub max_results: usize,
-    /// Milliseconds one provider may take before it is abandoned.
-    pub provider_timeout: u64,
+    /// Milliseconds one search engine may take before it is abandoned.
+    pub engine_timeout: u64,
     /// Milliseconds allowed for the whole query.
     pub timeout: u64,
     /// Blend weight for a local hit against a borrowed one. Higher favors what
@@ -105,8 +105,8 @@ impl SearchSettings {
             requested.min(maximum)
         }
     }
-    pub fn provider_timeout(&self) -> Duration {
-        Duration::from_millis(self.provider_timeout)
+    pub fn engine_timeout(&self) -> Duration {
+        Duration::from_millis(self.engine_timeout)
     }
     pub fn timeout(&self) -> Duration {
         Duration::from_millis(self.timeout)
@@ -154,16 +154,14 @@ impl IndexSettings {
     }
 }
 
-/// Which providers run, and API keys any of them need.
+/// Which named search engines run, and API keys any of them need.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ProviderSettings {
-    /// Enable live web providers. False leaves local-index search available.
+pub struct EngineSettings {
+    /// Enable live web engines. False leaves local-index search available.
     pub enabled: bool,
-    /// Restrict to these provider names; an empty list means all providers when enabled.
+    /// Restrict to these engine names; an empty list means all engines when enabled.
     pub only: Vec<String>,
-    /// Provider name to the environment variable holding its API key.
-    pub api: BTreeMap<String, String>,
 }
 
 /// Limits on calls made to the selected paired host.

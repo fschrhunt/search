@@ -27,7 +27,7 @@ uses paired HTTPS, on loopback and remote interfaces alike. See [remote](remote.
   "dir": "/home/you/.local/share/search",
   "search": {
     "max_results": 10,
-    "provider_timeout": 2000,
+    "engine_timeout": 2000,
     "timeout": 8000,
     "local_weight": 1.5
   },
@@ -49,10 +49,9 @@ uses paired HTTPS, on loopback and remote interfaces alike. See [remote](remote.
     "refresh_hosts": [],
     "refresh_interval_days": 7
   },
-  "providers": {
+  "engines": {
     "enabled": true,
-    "only": ["brave", "wikipedia", "stackexchange"],
-    "api": { "brave": "BRAVE_SEARCH_KEY" }
+    "only": ["brave", "wikipedia", "stackexchange"]
   },
   "remote": {
     "timeout": 120000
@@ -68,7 +67,7 @@ concurrency must be positive. Zero size/retention means no pruning; a zero
 refresh interval makes every saved seeded page eligible for explicit refresh.
 
 - `address` is the listener address. `dir` holds the SQLite index.
-- `search.provider_timeout` limits one provider; `search.timeout` limits the
+- `search.engine_timeout` limits one engine; `search.timeout` limits the
   whole query. `max_results` caps results and `local_weight` ranks local hits.
 - `fetch.timeout` and `max_response_bytes` bound page retrieval. Set
   `allow_private_networks` only for tests or air-gapped mirrors; it disables the
@@ -80,11 +79,9 @@ refresh interval makes every saved seeded page eligible for explicit refresh.
   `index.include_in_search` controls blending local hits into web results.
   Disabling either does not delete existing pages; explicit index search remains
   available.
-- `providers.enabled: false` disables live web providers, leaving local-index
-  search available. `providers.only` optionally restricts providers; an empty
-  list enables all when `enabled` is true. `providers.api` maps provider names to environment-variable names
-  for API keys. The current built-in providers are keyless; configuring `api`
-  does not switch them to an authenticated API.
+- `engines.enabled: false` disables live search engines, leaving local-index
+  search available. `engines.only` optionally restricts engines; an empty
+  list enables all when `enabled` is true. The current engines are keyless.
 - `remote.timeout` sets the overall deadline for calls to the selected paired
   host. The default is 120000 milliseconds; the connection timeout stays fixed
   at 10000 milliseconds.

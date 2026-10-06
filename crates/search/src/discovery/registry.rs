@@ -14,7 +14,7 @@ use super::{
     default_providers, FailureCause, Finding, Provider, ProviderError, ProviderState,
     ProviderStatus, Query, Ranked, Response,
 };
-use crate::config::{ProviderSettings, SearchSettings};
+use crate::config::{EngineSettings, SearchSettings};
 
 /// Holds the enabled providers and the query bounds.
 pub struct Registry {
@@ -25,8 +25,8 @@ pub struct Registry {
 impl Registry {
     /// Build the registry from configuration. A provider whose required key is
     /// missing is dropped rather than failing startup.
-    pub fn new(providers: &ProviderSettings, search: SearchSettings) -> Self {
-        let providers: Vec<Arc<dyn Provider>> = default_providers(providers)
+    pub fn new(engines: &EngineSettings, search: SearchSettings) -> Self {
+        let providers: Vec<Arc<dyn Provider>> = default_providers(engines)
             .into_iter()
             .filter(|p| !p.missing_key())
             .map(Arc::from)
@@ -58,14 +58,14 @@ impl Registry {
         };
 
         let selected: Vec<Arc<dyn Provider>> = self.select(&query.providers);
-        let per_provider_time = self.settings.provider_timeout();
+        let per_engine_time = self.settings.engine_timeout();
 
         let mut set: JoinSet<(usize, ProviderState, Vec<Ranked>)> = JoinSet::new();
         for (index, provider) in selected.iter().enumerate() {
             let provider = Arc::clone(provider);
             let text = query.text.clone();
             set.spawn(async move {
-                run_provider(index, provider, text, per_provider, per_provider_time).await
+                run_provider(index, provider, text, per_provider, per_engine_time).await
             });
         }
 
@@ -458,7 +458,7 @@ mod tests {
         let asked = Arc::new(AtomicUsize::new(0));
         let settings = SearchSettings {
             timeout: 10,
-            provider_timeout: 5_000,
+            engine_timeout: 5_000,
             ..SearchSettings::default()
         };
         let registry = registry(

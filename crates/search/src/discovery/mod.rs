@@ -164,7 +164,7 @@ impl std::error::Error for ProviderError {}
 /// The provider families, one constructor per file section in `web.rs` and its
 /// siblings. Kept here so the registry has one list to build from.
 pub(super) fn default_providers(
-    settings: &crate::config::ProviderSettings,
+    settings: &crate::config::EngineSettings,
 ) -> Vec<Box<dyn Provider>> {
     let providers: Vec<Box<dyn Provider>> = vec![
         Box::new(web::Brave),
@@ -181,6 +181,6 @@ pub(super) fn default_providers(
         .collect()
 }
 
-fn enabled(settings: &crate::config::ProviderSettings, name: &str) -> bool {
+fn enabled(settings: &crate::config::EngineSettings, name: &str) -> bool {
     settings.enabled && (settings.only.is_empty() || settings.only.iter().any(|e| e == name))
 }

@@ -1,5 +1,5 @@
 //! The service's settings: where it listens, where its data lives, how long a
-//! query may run, and which providers are enabled.
+//! query may run, and which search engines are enabled.
 //!
 //! Omitted fields use safe defaults; explicit values are validated, not replaced.
 //! Credentials belong to the frontend, separate from shareable settings.
@@ -9,7 +9,7 @@ mod load;
 mod settings;
 
 pub use settings::{
-    Config, FetchSettings, IndexSettings, ProviderSettings, RemoteSettings, SearchSettings,
+    Config, EngineSettings, FetchSettings, IndexSettings, RemoteSettings, SearchSettings,
     DEFAULT_ADDRESS,
 };
 
