@@ -43,7 +43,7 @@ pub async fn serve(
         return 1;
     }
     let host = match Host::open(
-        &service.config().dir,
+        &service.config().home,
         hostname,
         std::time::Duration::from_secs(900),
     ) {

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Document language-independent executable engines with a complete offline starter,
+  declared runtime/credential setup, and native-binary packaging guidance.
+- Replace special built-in engines with installable packages under `crates/engines`,
+  a single embedded Mwmbl default and local package lifecycle commands. Use
+  `~/.search`/`SEARCH_HOME` for packages, settings, data, and
+  separate private trust storage; select packages through `engines.use` and keep
+  user overrides separate from package files. Executables receive only declared
+  credentials plus a minimal runtime environment. Fix release builds to target
+  the CLI package rather than the engine library.
 - Add host-configured JSON HTTP and executable search engines without a rebuild,
   with bounded output, guarded HTTP endpoints, shared ranking/deadlines, and local
   `search engines list/test` diagnostics. Document the executable trust boundary.

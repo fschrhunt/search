@@ -17,6 +17,9 @@ pub struct Config {
     pub notes: BTreeMap<String, String>,
     /// Listen address, `host:port`.
     pub address: String,
+    /// Package and settings root, resolved independently of the settings file.
+    #[serde(skip)]
+    pub home: PathBuf,
     /// Directory the index lives in.
     pub dir: PathBuf,
     /// The user agent the fetcher sends.
@@ -154,16 +157,23 @@ impl IndexSettings {
     }
 }
 
-/// Which built-in and configured search engines run.
+/// Which installed engine packages run, and their direct adapter overrides.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EngineSettings {
     /// Enable live web engines. False leaves local-index search available.
     pub enabled: bool,
-    /// Restrict to these engine names; an empty list means all engines when enabled.
-    pub only: Vec<String>,
-    /// Named HTTP or executable adapters, selected and ranked like built-ins.
-    pub custom: BTreeMap<String, AdapterSettings>,
+    /// Selected package IDs; an empty list disables all live engines.
+    #[serde(rename = "use")]
+    pub use_engines: Vec<String>,
+    /// Per-package shallow overrides; values must be objects.
+    pub config: BTreeMap<String, serde_json::Value>,
+    /// Resolved execution adapters; never accepted from settings JSON.
+    #[serde(skip)]
+    pub adapters: BTreeMap<String, AdapterSettings>,
+    /// Shared package leases prevent updates/removal while this service can execute them.
+    #[serde(skip)]
+    pub leases: Vec<std::sync::Arc<std::fs::File>>,
 }
 
 /// Limits on calls made to the selected paired host.
@@ -212,6 +222,9 @@ pub struct HttpAdapterSettings {
     pub url_pointer: String,
     #[serde(default = "default_snippet_pointer")]
     pub snippet_pointer: String,
+    /// Join array-valued titles/snippets by this per-part JSON pointer, when configured.
+    #[serde(default)]
+    pub text_part_pointer: Option<String>,
     #[serde(default = "default_adapter_cap")]
     pub max_response_bytes: u64,
     #[serde(default)]
@@ -223,6 +236,15 @@ pub struct HttpAdapterSettings {
 #[serde(deny_unknown_fields)]
 pub struct CommandAdapterSettings {
     pub command: String,
+    /// JSON data passed in the request, never interpolated into arguments.
+    #[serde(default)]
+    pub config: BTreeMap<String, serde_json::Value>,
+    /// Explicitly inherited credential environment variable names.
+    #[serde(default)]
+    pub env: Vec<String>,
+    /// Resolved package root; callers cannot override it in settings.
+    #[serde(skip)]
+    pub cwd: PathBuf,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default = "default_adapter_cap")]

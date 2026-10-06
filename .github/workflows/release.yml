@@ -64,7 +64,7 @@ jobs:
               mkdir -p "dist/$target"
               rustup target add "$triple"
               SEARCH_BUILD_VERSION="$TAG" SEARCH_BUILD_CHANNEL=release SEARCH_BUILD_COMMIT="$GITHUB_SHA" \
-                cargo build --release --locked --target "$triple" -p search
+                cargo build --release --locked --target "$triple" -p cli
               cp "target/$triple/release/search" "dist/$target/search"
               cp LICENSE "dist/$target/"
               tar -C "dist/$target" -czf "dist/$target.tar.gz" search LICENSE
@@ -127,3 +127,7 @@ jobs:
         run: |
           sh install.sh --version "$TAG" --dir "$RUNNER_TEMP/search"
           test "$("$RUNNER_TEMP/search/search" --version)" = "$TAG"
+          export SEARCH_HOME="$RUNNER_TEMP/search-home"
+          "$RUNNER_TEMP/search/search" engines available
+          "$RUNNER_TEMP/search/search" engines install searxng
+          "$RUNNER_TEMP/search/search" engines list

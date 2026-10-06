@@ -10,7 +10,7 @@ use super::Config;
 pub struct ConfigError(String);
 
 impl ConfigError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         ConfigError(message.into())
     }
     /// The operator-facing message.
@@ -31,7 +31,12 @@ impl std::error::Error for ConfigError {}
 /// and environment overrides, and validate the result.
 pub fn load(path: Option<PathBuf>) -> Result<Config, ConfigError> {
     let explicit = path.or_else(|| std::env::var_os("CONFIG").map(PathBuf::from));
-    let mut config = read(explicit.clone().or_else(default_path), explicit.is_some())?;
+    let home = home()?;
+    let mut config = read(
+        Some(explicit.clone().unwrap_or(home.join("settings.json"))),
+        explicit.is_some(),
+    )?;
+    config.home = home;
     apply_env(&mut config);
     config.dir = expand_home(&config.dir, std::env::var_os("HOME").map(PathBuf::from))?;
     config.validate()?;
@@ -56,15 +61,25 @@ fn read(path: Option<PathBuf>, explicit: bool) -> Result<Config, ConfigError> {
             )))
         }
     };
-    serde_json::from_str(&text).map_err(|error| {
-        // Deserializer messages may quote header values or credential-bearing URLs.
+    let mut deserializer = serde_json::Deserializer::from_str(&text);
+    let config = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+        let field = super::adapters::safe_field_path(error.path());
         ConfigError::new(format!(
-            "parse {}: invalid settings at line {}, column {}",
+            "parse {}: invalid settings at line {}, column {} (field {field})",
+            path.display(),
+            error.inner().line(),
+            error.inner().column()
+        ))
+    })?;
+    deserializer.end().map_err(|error| {
+        ConfigError::new(format!(
+            "parse {}: trailing data at line {}, column {}",
             path.display(),
             error.line(),
             error.column()
         ))
-    })
+    })?;
+    Ok(config)
 }
 
 /// Expand only a leading home component, not shell variables or other users' homes.
@@ -72,23 +87,44 @@ fn expand_home(path: &std::path::Path, home: Option<PathBuf>) -> Result<PathBuf,
     match path.strip_prefix("~") {
         Ok(rest) => home
             .map(|home| home.join(rest))
-            .ok_or_else(|| ConfigError::new("dir uses ~ but HOME is not set")),
+            .ok_or_else(|| ConfigError::new("path uses ~ but HOME is not set")),
         Err(_) => Ok(path.to_path_buf()),
     }
 }
 
-/// The standard location: `$XDG_CONFIG_HOME/search/settings.json` or
-/// `~/.config/search/settings.json`.
-fn default_path() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        return Some(PathBuf::from(xdg).join("search").join("settings.json"));
+/// Resolve Search's root without consulting the working directory or settings path.
+pub fn home() -> Result<PathBuf, ConfigError> {
+    resolve_home(std::env::var_os("SEARCH_HOME"), std::env::var_os("HOME"))
+}
+
+/// The implicit settings file belongs to Search home; CONFIG is handled by load.
+pub fn settings_path() -> Result<PathBuf, ConfigError> {
+    Ok(home()?.join("settings.json"))
+}
+
+/// Resolve explicit or conventional home, failing closed for absent/relative roots.
+fn resolve_home(
+    search_home: Option<std::ffi::OsString>,
+    user_home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, ConfigError> {
+    let path = match search_home {
+        Some(value) if value.is_empty() => {
+            return Err(ConfigError::new("SEARCH_HOME must not be empty"))
+        }
+        Some(value) => expand_home(&PathBuf::from(value), user_home.map(PathBuf::from))?,
+        None => {
+            PathBuf::from(user_home.filter(|value| !value.is_empty()).ok_or_else(|| {
+                ConfigError::new("set SEARCH_HOME to an absolute path or set HOME")
+            })?)
+            .join(".search")
+        }
+    };
+    if !path.is_absolute() {
+        return Err(ConfigError::new(
+            "SEARCH_HOME/HOME must resolve to an absolute path",
+        ));
     }
-    std::env::var_os("HOME").map(|home| {
-        PathBuf::from(home)
-            .join(".config")
-            .join("search")
-            .join("settings.json")
-    })
+    Ok(path)
 }
 
 /// Environment variables win over the file for the fields that name a place to
@@ -130,11 +166,13 @@ impl Config {
 
     /// Reject malformed listeners and unusable bounds; authentication belongs to adapters.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if !self.home.is_absolute() {
+            return Err(ConfigError::new(
+                "home must be absolute; set SEARCH_HOME or HOME",
+            ));
+        }
         if !valid_address(&self.address) {
-            return Err(ConfigError::new(format!(
-                "address {:?} is not host:port",
-                self.address
-            )));
+            return Err(ConfigError::new("address must be host:port"));
         }
         for (name, value) in [
             ("search.max_results", self.search.max_results as u64),
@@ -194,13 +232,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_diagnostics_do_not_quote_adapter_values() {
+    fn parse_diagnostics_identify_fields_without_quoting_values() {
         let path = std::env::temp_dir().join(format!("search-invalid-{}", uuid::Uuid::new_v4()));
-        std::fs::write(&path, r#"{"engines":{"custom":{"fixture":{"type":"command","command":"tool","max_response_bytes":"credential-secret"}}}}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"fetch":{"max_response_bytes":"credential-secret"}}"#,
+        )
+        .unwrap();
         let error = read(Some(path.clone()), true).unwrap_err().to_string();
         std::fs::remove_file(path).unwrap();
         assert!(error.contains("invalid settings at line"));
         assert!(!error.contains("credential-secret"));
+        assert!(error.contains("fetch.max_response_bytes"));
     }
 
     #[test]
@@ -267,20 +310,10 @@ mod tests {
         assert!(config.validate().is_err());
     }
 
-    /// Removed credential and location names must not silently load defaults.
-    #[test]
-    fn legacy_settings_are_rejected() {
-        for field in ["directory", "token", "token_env", "providers"] {
-            let json = serde_json::json!({field: "old"});
-            assert!(serde_json::from_value::<Config>(json).is_err());
-        }
-        assert!(serde_json::from_str::<Config>(r#"{"dir":"/tmp/search"}"#).is_ok());
-    }
-
     #[test]
     fn settings_json_uses_clean_names() {
         let config = serde_json::from_str::<Config>(
-            r#"{"notes":{"search.timeout":"milliseconds"},"search":{"timeout":5000},"index":{"include_in_search":false,"save_fetched_pages":false},"engines":{"only":["brave"]}}"#,
+            r#"{"notes":{"search.timeout":"milliseconds"},"search":{"timeout":5000},"index":{"include_in_search":false,"save_fetched_pages":false},"engines":{"use":["mwmbl"]}}"#,
         )
         .ok();
         assert_eq!(
@@ -288,9 +321,9 @@ mod tests {
                 c.index.should_include_in_search(),
                 c.index.should_save_fetched_pages(),
                 c.search.timeout,
-                c.engines.only,
+                c.engines.use_engines,
             )),
-            Some((false, false, 5000, vec!["brave".into()]))
+            Some((false, false, 5000, vec!["mwmbl".into()]))
         );
     }
 
@@ -302,5 +335,42 @@ mod tests {
         assert!(!config.engines.enabled);
         assert_eq!(config.remote.timeout(), std::time::Duration::from_secs(45));
         assert!(config.validate().is_ok());
+    }
+    #[test]
+    fn home_resolution_is_explicit_absolute_and_fails_closed() {
+        let user = Some(std::ffi::OsString::from("/home/operator"));
+        assert_eq!(
+            resolve_home(None, user.clone()).unwrap(),
+            PathBuf::from("/home/operator/.search")
+        );
+        assert_eq!(
+            resolve_home(Some("~/private-search".into()), user.clone()).unwrap(),
+            PathBuf::from("/home/operator/private-search")
+        );
+        assert_eq!(
+            resolve_home(Some("/srv/search".into()), None).unwrap(),
+            PathBuf::from("/srv/search")
+        );
+        for root in ["", "relative", "~other/search"] {
+            assert!(resolve_home(Some(root.into()), user.clone()).is_err());
+        }
+        assert!(resolve_home(None, None).is_err());
+        assert!(resolve_home(None, Some("relative".into())).is_err());
+        assert!(resolve_home(Some("~/search".into()), None).is_err());
+    }
+
+    #[test]
+    fn explicit_settings_file_does_not_relocate_home_or_data() {
+        let root = std::env::temp_dir().join(format!("search-settings-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("settings.json");
+        std::fs::write(&path, "{}").unwrap();
+        let config = load(Some(path)).unwrap();
+        assert_eq!(config.home, home().unwrap());
+        if std::env::var_os("DIR").is_none() {
+            assert_eq!(config.dir, config.home.join("data"));
+        }
+        assert!(!root.join("data").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

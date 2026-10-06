@@ -1,13 +1,14 @@
 # The workspace: every crate lives under crates/, one folder per crate.
 #
 #   search  the engine library: discovery, fetch, and its private index
+#   engines maintained engine packages and their local installer/catalog
 #   cli     the `search` executable and HTTP API
 #   mcp     the optional MCP adapter: tools and MCP transports
 #
 # The executable and protocol adapters depend on the engine; the engine never
 # depends on a frontend or protocol.
 [workspace]
-members = ["crates/search", "crates/cli", "crates/mcp"]
+members = ["crates/search", "crates/cli", "crates/mcp", "crates/engines"]
 resolver = "2"
 
 # The application's version is the release version: the tag, `search --version`,
@@ -23,6 +24,7 @@ repository = "https://github.com/fschrhunt/search"
 [workspace.dependencies]
 search = { package = "search", path = "crates/search", version = "=0.1.0" }
 search_mcp = { package = "mcp", path = "crates/mcp", version = "=0.1.0" }
+search_engines = { path = "crates/engines", version = "=0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "process"] }

@@ -11,19 +11,19 @@ use crate::config::{AdapterSettings, CommandAdapterSettings, HttpAdapterSettings
 use crate::fetch::guard::{check_host, GuardedResolver};
 
 /// An owned configured identifier and its query transport.
-pub(super) struct CustomProvider {
+pub(super) struct AdapterProvider {
     name: String,
     settings: AdapterSettings,
 }
 
-impl CustomProvider {
+impl AdapterProvider {
     /// Construction does not contact endpoints or resolve environment credentials.
     pub(super) fn new(name: String, settings: AdapterSettings) -> Self {
         Self { name, settings }
     }
 }
 
-impl Provider for CustomProvider {
+impl Provider for AdapterProvider {
     fn name(&self) -> &str {
         &self.name
     }
@@ -123,10 +123,13 @@ async fn http(
     rows(
         name,
         &value,
-        &settings.results_pointer,
-        &settings.title_pointer,
-        &settings.url_pointer,
-        &settings.snippet_pointer,
+        Mapping {
+            results: &settings.results_pointer,
+            title: &settings.title_pointer,
+            url: &settings.url_pointer,
+            snippet: &settings.snippet_pointer,
+            text_part: settings.text_part_pointer.as_deref(),
+        },
         limit,
     )
 }
@@ -154,8 +157,40 @@ async fn command(
     query: &str,
     limit: usize,
 ) -> Result<Vec<Finding>, ProviderError> {
-    let mut child = tokio::process::Command::new(&settings.command)
+    if !settings.cwd.is_absolute() {
+        return Err(ProviderError::rejected("command package root unavailable"));
+    }
+    // Relative executable paths must be resolved against the same root on every OS.
+    let executable = if settings.command.contains('/') || settings.command.contains('\\') {
+        settings.cwd.join(&settings.command)
+    } else {
+        std::path::PathBuf::from(&settings.command)
+    };
+    let mut process = tokio::process::Command::new(executable);
+    process
         .args(&settings.args)
+        .current_dir(&settings.cwd)
+        .env_clear();
+    for name in [
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "SystemRoot",
+        "SYSTEMROOT",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            process.env(name, value);
+        }
+    }
+    for name in &settings.env {
+        let value = std::env::var_os(name)
+            .ok_or_else(|| ProviderError::rejected("custom credential unavailable"))?;
+        process.env(name, value);
+    }
+    let mut child = process
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -170,9 +205,16 @@ async fn command(
         .stdout
         .take()
         .ok_or_else(|| ProviderError::network("custom command output unavailable"))?;
-    let request =
-        serde_json::to_vec(&serde_json::json!({"version": 1, "query": query, "limit": limit}))
-            .map_err(|_| malformed())?;
+    let mut request = serde_json::json!({"version": 1, "query": query, "limit": limit});
+    if !settings.config.is_empty() {
+        if let Some(object) = request.as_object_mut() {
+            object.insert(
+                "config".into(),
+                serde_json::to_value(&settings.config).map_err(|_| malformed())?,
+            );
+        }
+    }
+    let request = serde_json::to_vec(&request).map_err(|_| malformed())?;
     let write = async move {
         stdin
             .write_all(&request)
@@ -208,34 +250,68 @@ async fn command(
         ));
     }
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
-    rows(
-        name, &value, "/results", "/title", "/url", "/snippet", limit,
-    )
+    rows(name, &value, Mapping::COMMAND, limit)
+}
+
+/// JSON field locations; executable answers use the fixed protocol mapping.
+struct Mapping<'a> {
+    results: &'a str,
+    title: &'a str,
+    url: &'a str,
+    snippet: &'a str,
+    text_part: Option<&'a str>,
+}
+
+impl Mapping<'_> {
+    const COMMAND: Self = Self {
+        results: "/results",
+        title: "/title",
+        url: "/url",
+        snippet: "/snippet",
+        text_part: None,
+    };
+}
+
+/// Decode text or explicitly mapped ordered text fragments, never silently discard parts.
+fn mapped_text(value: &serde_json::Value, part: Option<&str>) -> Result<String, ProviderError> {
+    if let Some(text) = value.as_str() {
+        return Ok(text.into());
+    }
+    let pointer = part.ok_or_else(malformed)?;
+    let parts = value.as_array().ok_or_else(malformed)?;
+    let mut text = String::new();
+    for part in parts {
+        text.push_str(
+            part.pointer(pointer)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(malformed)?,
+        );
+    }
+    Ok(text)
 }
 
 /// Validate all rows before truncating, and stamp only locally configured provenance.
 fn rows(
     name: &str,
     value: &serde_json::Value,
-    results: &str,
-    title: &str,
-    url: &str,
-    snippet: &str,
+    mapping: Mapping<'_>,
     limit: usize,
 ) -> Result<Vec<Finding>, ProviderError> {
     let rows = value
-        .pointer(results)
+        .pointer(mapping.results)
         .and_then(serde_json::Value::as_array)
         .ok_or_else(malformed)?;
     let mut findings = Vec::new();
     for row in rows {
-        let title = row
-            .pointer(title)
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.trim().is_empty())
-            .ok_or_else(malformed)?;
+        let title = mapped_text(
+            row.pointer(mapping.title).ok_or_else(malformed)?,
+            mapping.text_part,
+        )?;
+        if title.trim().is_empty() {
+            return Err(malformed());
+        }
         let url = row
-            .pointer(url)
+            .pointer(mapping.url)
             .and_then(serde_json::Value::as_str)
             .ok_or_else(malformed)?;
         // Result fragments are useful page anchors; endpoint fragments are forbidden.
@@ -244,14 +320,13 @@ fn rows(
         if http_url(parsed.as_str()).is_none() {
             return Err(malformed());
         }
-        let snippet = match row.pointer(snippet) {
+        let snippet = match row.pointer(mapping.snippet) {
             None | Some(serde_json::Value::Null) => None,
-            Some(serde_json::Value::String(s)) => Some(s.clone()),
-            _ => return Err(malformed()),
+            Some(value) => Some(mapped_text(value, mapping.text_part)?),
         };
         if findings.len() < limit {
             findings.push(Finding {
-                title: title.into(),
+                title,
                 url: url.into(),
                 snippet,
                 fetched_at: None,
@@ -279,6 +354,9 @@ mod tests {
     fn executable(script: &str, cap: u64) -> CommandAdapterSettings {
         CommandAdapterSettings {
             command: "python3".into(),
+            config: Default::default(),
+            env: Vec::new(),
+            cwd: std::env::temp_dir(),
             args: vec!["-c".into(), script.into()],
             max_response_bytes: cap,
         }
@@ -305,6 +383,42 @@ print(json.dumps({'results':[{'title':'First','url':'https://example.com/a','pro
         assert_eq!(results[0].providers, ["owned"]);
         assert_eq!(results[0].score, 0.0);
         assert_eq!(results[0].fetched_at, None);
+    }
+
+    #[tokio::test]
+    async fn commands_receive_only_declared_credentials_package_cwd_and_json_config() {
+        let root = std::env::temp_dir().join(format!("search-command-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("asset.txt"), "package data").unwrap();
+        let declared = format!("SEARCH_DECLARED_{}", uuid::Uuid::new_v4().simple());
+        let hidden = format!("SEARCH_HIDDEN_{}", uuid::Uuid::new_v4().simple());
+        std::env::set_var(&declared, "fixture-secret");
+        std::env::set_var(&hidden, "must-not-leak");
+        let mut settings = executable(
+            r#"
+import sys,json,os
+request=json.load(sys.stdin)
+assert os.environ[sys.argv[1]] == 'fixture-secret'
+assert sys.argv[2] not in os.environ
+assert open('asset.txt').read() == 'package data'
+assert request['config'] == {'literal':'$HOME; $(echo secret)'}
+print(json.dumps({'results':[]}))
+"#,
+            4096,
+        );
+        settings.cwd = root.clone();
+        settings.env.push(declared.clone());
+        settings.args.extend([declared.clone(), hidden.clone()]);
+        settings
+            .config
+            .insert("literal".into(), serde_json::json!("$HOME; $(echo secret)"));
+        let result = command("fixture", &settings, "q", 1).await;
+        std::env::remove_var(&declared);
+        std::env::remove_var(&hidden);
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(result.unwrap().is_empty());
+        let error = command("fixture", &settings, "q", 1).await.unwrap_err();
+        assert_eq!(error.message, "custom credential unavailable");
     }
 
     #[tokio::test]
@@ -420,6 +534,18 @@ print(json.dumps({'results':[{'title':'First','url':'https://example.com/a','pro
     }
 
     #[tokio::test]
+    async fn mapped_text_fragments_keep_the_complete_title_and_snippet() {
+        let (url, task) = socket_response("200 OK", r#"{"results":[{"title":[{"value":"Rust"},{"value":" async guide"}],"url":"https://example.com/","snippet":[{"value":"First "},{"value":"second"}]}]}"#, "").await;
+        let mut settings = http_settings(&url);
+        settings.text_part_pointer = Some("/value".into());
+        let results = http("fixture", &settings, "query", 1).await.unwrap();
+        task.await.unwrap();
+        assert_eq!(results[0].title, "Rust async guide");
+        assert_eq!(results[0].snippet.as_deref(), Some("First second"));
+        assert!(mapped_text(&serde_json::json!([{"value":4}]), Some("/value")).is_err());
+    }
+
+    #[tokio::test]
     async fn current_query_and_limit_replace_configured_parameter_values() {
         let (url, task) = socket_response("200 OK", r#"{"results":[]}"#, "").await;
         let mut settings = http_settings(&format!(
@@ -454,9 +580,9 @@ print(json.dumps({'results':[{'title':'First','url':'https://example.com/a','pro
         settings.allow_private_networks = false;
         config
             .engines
-            .custom
+            .adapters
             .insert("private".into(), AdapterSettings::Http(settings));
-        config.engines.only = vec!["private".into()];
+        config.engines.use_engines = vec!["private".into()];
         let response = Registry::new(&config.engines, config.search.clone())
             .search(Query::default())
             .await;
@@ -472,9 +598,9 @@ print(json.dumps({'results':[{'title':'First','url':'https://example.com/a','pro
         );
         config
             .engines
-            .custom
+            .adapters
             .insert("missing".into(), AdapterSettings::Http(settings));
-        config.engines.only = vec!["missing".into()];
+        config.engines.use_engines = vec!["missing".into()];
         let response = Registry::new(&config.engines, config.search)
             .search(Query::default())
             .await;
@@ -491,14 +617,14 @@ print(json.dumps({'results':[{'title':'First','url':'https://example.com/a','pro
         let mut config = Config::default();
         config.search.max_results = 2;
         config.search.engine_timeout = 2000;
-        config.engines.only = vec!["selected".into()];
-        config.engines.custom.insert("selected".into(), AdapterSettings::Command(executable(r#"
+        config.engines.use_engines = vec!["selected".into()];
+        config.engines.adapters.insert("selected".into(), AdapterSettings::Command(executable(r#"
 import json,sys
 request=json.load(sys.stdin)
 assert request['limit'] == 2
 print(json.dumps({'results':[{'title':str(i),'url':'https://example.com/'+str(i)} for i in range(3)]}))
 "#, 4096)));
-        config.engines.custom.insert(
+        config.engines.adapters.insert(
             "omitted".into(),
             AdapterSettings::Command(executable("raise Exception('must not run')", 4096)),
         );
@@ -514,7 +640,7 @@ print(json.dumps({'results':[{'title':str(i),'url':'https://example.com/'+str(i)
         assert_eq!(response.providers[0].count, 2);
         assert_eq!(response.providers[0].status, ProviderStatus::Ok);
         assert!(response.results[0].score > response.results[1].score);
-        config.engines.custom.insert(
+        config.engines.adapters.insert(
             "selected".into(),
             AdapterSettings::Command(executable("import time; time.sleep(30)", 4096)),
         );
@@ -536,7 +662,7 @@ print(json.dumps({'results':[{'title':str(i),'url':'https://example.com/'+str(i)
             serde_json::json!({"title":"Title","url":"https://example.com/","snippet":8}),
         ] {
             let value = serde_json::json!({"results":[row]});
-            assert!(rows("fixture", &value, "/results", "/title", "/url", "/snippet", 0).is_err());
+            assert!(rows("fixture", &value, Mapping::COMMAND, 0).is_err());
         }
     }
 
@@ -551,7 +677,7 @@ print(json.dumps({'results':[{'title':str(i),'url':'https://example.com/'+str(i)
                 4096,
             );
             settings.args.push(path.to_string_lossy().into());
-            let future = CustomProvider::new("slow".into(), AdapterSettings::Command(settings))
+            let future = AdapterProvider::new("slow".into(), AdapterSettings::Command(settings))
                 .search("q".into(), 1);
             let task = tokio::spawn(async move {
                 if timeout {

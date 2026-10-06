@@ -27,12 +27,17 @@ air-gapped mirrors. Never set it on a reachable service.
 
 ## Untrusted content
 
-Custom engine settings are operator-owned, not model-chosen request fields.
+Engine packages and settings are operator-owned, not model-chosen request fields.
+Package management is local-only; inspection/installation/configuration never
+runs package code or arbitrary installer hooks. Explicit activation is required.
+Search never discovers executable packages from the current working directory.
 JSON HTTP adapters use the same host and DNS guard as the fetcher, prohibit
 redirects and proxies, and require per-adapter opt-in for private networks.
 Executable adapters are **trusted code running as the host user**, without a
-sandbox; paired devices may trigger them through searches. Their descendants
-are the adapter's responsibility. See [custom engines](engines.md). Credentials
+sandbox; paired devices may trigger them through searches. Only explicitly declared
+credentials and a minimal runtime environment are passed through, which is not
+filesystem isolation. Their descendants are the adapter's responsibility.
+See [engine packages](engines.md). Credentials
 should come from host environment variables, not shareable settings.
 
 A fetched page is untrusted content, and the cheapest place to hide an

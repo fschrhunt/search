@@ -3,10 +3,10 @@ use crate::trust::{self, Devices, Profiles, RemoteCredential};
 use search_mcp::backend::{self, Backend, Remote};
 use std::{collections::BTreeMap, path::PathBuf};
 
-/// Resolve private storage from local settings without opening a local engine.
+/// Resolve private storage from the Search home without opening a local engine.
 pub fn storage(config: Option<String>) -> Result<PathBuf, String> {
     let config = search::config::load(config.map(PathBuf::from)).map_err(|e| e.to_string())?;
-    trust::dir(&config.dir)
+    trust::dir(&config.home)
 }
 
 /// Choose the sole execution target; corrupt or missing selected credentials fail closed.
@@ -14,14 +14,14 @@ pub fn selected(config: Option<String>) -> Result<Option<Backend>, String> {
     let settings = search::config::load(config.map(PathBuf::from)).map_err(|e| e.to_string())?;
     // A clean local install needs neither credentials nor private storage.
     if !settings
-        .dir
+        .home
         .join("trust")
         .try_exists()
         .map_err(|e| e.to_string())?
     {
         return Ok(None);
     }
-    let path = trust::dir(&settings.dir)?;
+    let path = trust::dir(&settings.home)?;
     let profiles: Profiles = trust::read(&path.join("remotes.json"))?;
     profiles
         .selected

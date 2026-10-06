@@ -1,17 +1,19 @@
 # Configuration
 
-Settings are read from `~/.config/search/settings.json`, or the file named by
+Settings are read from `~/.search/settings.json`, or the file named by
 `CONFIG`. Missing explicitly selected files are errors; only an absent default
 file uses built-in settings. The file is ordinary JSON; add explanations in the
 optional `notes` object. Unknown settings fail at startup rather than being ignored.
 
 ## Environment overrides
 
+- `SEARCH_HOME` selects the application home (default `~/.search`), not the working directory.
 - `CONFIG` selects the settings file.
 - `ADDRESS` overrides `address`.
 - `DIR` overrides `dir`.
 
-Pairing credentials live in owner-only files under `dir/trust`, separate from
+Installed packages live under `SEARCH_HOME/engines`; pairing credentials live in
+owner-only files under `SEARCH_HOME/trust`, separate from
 settings. Local CLI and stdio MCP need no authentication. `search serve` always
 uses paired HTTPS, on loopback and remote interfaces alike. See [remote](remote.md).
 
@@ -24,7 +26,7 @@ uses paired HTTPS, on loopback and remote interfaces alike. See [remote](remote.
     "index.enabled": "False disables all corpus access; it does not delete existing pages."
   },
   "address": "127.0.0.1:8642",
-  "dir": "/home/you/.local/share/search",
+  "dir": "/home/you/.search/data",
   "search": {
     "max_results": 10,
     "engine_timeout": 2000,
@@ -51,7 +53,8 @@ uses paired HTTPS, on loopback and remote interfaces alike. See [remote](remote.
   },
   "engines": {
     "enabled": true,
-    "only": ["brave", "wikipedia", "stackexchange"]
+    "use": ["mwmbl"],
+    "config": {}
   },
   "remote": {
     "timeout": 120000
@@ -79,14 +82,23 @@ refresh interval makes every saved seeded page eligible for explicit refresh.
   `index.include_in_search` controls blending local hits into web results.
   Disabling either does not delete existing pages; explicit index search remains
   available.
-- `engines.enabled: false` disables live search engines, leaving local-index
-  search available. `engines.only` optionally restricts engines; an empty
-  list enables all when `enabled` is true. The current engines are keyless.
-  `engines.custom` adds named HTTP or executable adapters without a rebuild;
-  see [custom engines](engines.md) for the schema, examples, and trust boundary.
+- `engines.enabled: false` disables live engines, leaving local-index search
+  available. `engines.use` selects installed package IDs; empty means none, not
+  all. The default selection is just `mwmbl`. `engines.config` holds per-engine
+  adapter overrides, separate from package files; see [engine packages](engines.md)
+  for installation, configuration, and the executable trust boundary.
 - `remote.timeout` sets the overall deadline for calls to the selected paired
   host. The default is 120000 milliseconds; the connection timeout stays fixed
   at 10000 milliseconds.
 
 `dir` expands a leading `~/` using `HOME`. The old `directory`,
 `token`, and `token_env` fields are rejected, with no compatibility aliases.
+
+`CONFIG` changes only the settings file, not the package or trust home. `DIR`
+changes only corpus storage, not private credentials. `SEARCH_HOME` must name an
+absolute path (a leading `~/` is expanded); no current-directory fallback exists.
+
+The settings schema is a clean break: old XDG paths and inline `engines.custom`/
+`engines.only` settings are not read or migrated. Each installed engine owns its
+manifest at `SEARCH_HOME/engines/NAME/engine.json`; user overrides remain in
+`settings.json`, so updating an engine does not overwrite them.

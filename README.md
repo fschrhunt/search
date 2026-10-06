@@ -18,11 +18,10 @@
 
 ## Find, read, keep
 
-- **Find:** query several independent providers in parallel and merge their
-  results. Keyless providers work out of the box; a failed provider is reported
-  rather than hidden.
-  [Add custom engines](docs/engines.md) through JSON HTTP settings or a small
-  executable adapter, without rebuilding Search.
+- **Find:** run installed engine packages in parallel and merge their results.
+  Mwmbl is the single keyless default; a failed engine is reported rather than
+  hidden. [Install maintained or custom engines](docs/engines.md) without rebuilding
+  Search. Packages live in `~/.search/engines` and use one public adapter contract.
 - **Read:** fetch pages through an SSRF-protected reader that strips page
   clutter. Ask for passages relevant to a query instead of a whole article.
 - **Keep:** fetched pages join a local SQLite full-text index. Search blends
@@ -97,8 +96,10 @@ configured engine with `Search::open(config)`.
 
 ## Make it yours
 
-Settings live in `~/.config/search/settings.json` or the file named by
-`CONFIG`. Defaults are useful; turn features off or tune them as needed.
+Settings live in `~/.search/settings.json` or the file named by `CONFIG`.
+`SEARCH_HOME` selects the Search home, including packages, data, and private trust
+storage; it defaults to `~/.search`. Defaults are useful; turn features off or tune
+them as needed. No packages are implicitly loaded from the working directory.
 
 ```json
 {

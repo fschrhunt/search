@@ -16,10 +16,10 @@ pub struct Search {
 }
 
 impl Search {
-    /// Open the engine, touching the database only when the index is enabled.
-    pub fn open(config: Config) -> Result<Self, SearchError> {
-        config
-            .validate()
+    /// Resolve selected packages before opening the optional corpus.
+    /// Disabled indexing and the embedded default require no filesystem writes.
+    pub fn open(mut config: Config) -> Result<Self, SearchError> {
+        crate::config::resolve_engines(&mut config)
             .map_err(|error| SearchError::Settings(error.to_string()))?;
         let store = if config.index.enabled {
             Some(Arc::new(
@@ -173,14 +173,113 @@ mod tests {
     async fn disabling_the_index_leaves_disk_untouched() {
         let dir = std::env::temp_dir().join(format!("search-disabled-{}", uuid::Uuid::new_v4()));
         let mut config = Config {
-            dir: dir.clone(),
+            home: dir.join("home"),
+            dir: dir.join("data"),
             ..Default::default()
         };
         config.index.enabled = false;
         let service = Search::open(config).unwrap();
+        assert_eq!(service.provider_names(), [search_engines::DEFAULT_ENGINE]);
         assert!(service.index_search("anything", 1).is_err());
         assert!(service.index_stats().is_err());
         assert_eq!(service.refresh_seeded().await, 0);
         assert!(!dir.exists());
+    }
+    /// Package resolution must precede database access when local setup is incomplete.
+    #[test]
+    fn invalid_selected_package_does_not_create_the_corpus() {
+        let root = std::env::temp_dir().join(format!("search-missing-{}", uuid::Uuid::new_v4()));
+        let mut config = Config {
+            home: root.join("home"),
+            dir: root.join("data"),
+            ..Default::default()
+        };
+        config.engines.use_engines = vec!["missing-fixture".into()];
+        let error = Search::open(config).err().unwrap().to_string();
+        assert!(error.contains("missing-fixture"));
+        assert!(!root.exists());
+    }
+
+    /// Search uses resolved package assets and overrides, discarding injected adapters.
+    #[tokio::test]
+    async fn installed_package_runs_from_its_root_without_opening_the_index() {
+        let root = std::env::temp_dir().join(format!("search-installed-{}", uuid::Uuid::new_v4()));
+        let source = root.join("source");
+        let home = root.join("home");
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&source).unwrap();
+        let manifest = serde_json::json!({
+            "schema_version":1,"id":"fixture","version":"1","description":"offline fixture",
+            "adapter":{"type":"command","command":"python3","args":["runner.py"],"config":{"title":"default"}},
+            "files":["runner.py","asset.txt"]
+        });
+        std::fs::write(
+            source.join("engine.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(source.join("asset.txt"), "package asset").unwrap();
+        std::fs::write(
+            source.join("runner.py"),
+            r#"
+import sys,json
+request=json.load(sys.stdin)
+assert open('asset.txt').read() == 'package asset'
+print(json.dumps({'results':[{'title':request['config']['title'],'url':'https://example.com/'}]}))
+"#,
+        )
+        .unwrap();
+        let installed = search_engines::install_local(&home, &source).unwrap();
+        let mut config = Config {
+            home: home.clone(),
+            dir: root.join("data"),
+            ..Default::default()
+        };
+        config.index.enabled = false;
+        config.search.engine_timeout = 5000;
+        config.engines.use_engines = vec!["fixture".into()];
+        config.engines.config.insert(
+            "fixture".into(),
+            serde_json::json!({"config":{"title":"configured"}}),
+        );
+        config
+            .engines
+            .config
+            .insert("unselected".into(), serde_json::json!({"type":"invalid"}));
+        config.engines.adapters.insert(
+            "fixture".into(),
+            serde_json::from_value(
+                serde_json::json!({"type":"command","command":"must-not-execute"}),
+            )
+            .unwrap(),
+        );
+        let service = Search::open(config).unwrap();
+        let crate::config::AdapterSettings::Command(adapter) =
+            &service.config().engines.adapters["fixture"]
+        else {
+            panic!("command package")
+        };
+        assert_eq!(adapter.cwd, installed.path);
+        let response = service
+            .search(Query {
+                text: "query".into(),
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(response.providers[0].status, discovery::ProviderStatus::Ok);
+        assert_eq!(response.results[0].title, "configured");
+        assert_eq!(response.results[0].providers, ["fixture"]);
+        assert!(!root.join("data").exists());
+        assert!(search_engines::remove(&home, "fixture").is_err());
+        drop(service);
+        drop(installed);
+        search_engines::remove(&home, "fixture").unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

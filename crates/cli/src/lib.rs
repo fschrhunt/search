@@ -2,6 +2,7 @@
 //! own crates and are composed here into the `search` executable.
 
 pub mod args;
+pub mod engines;
 pub mod http;
 pub mod render;
 pub mod run;

@@ -13,8 +13,8 @@ search serve -address 0.0.0.0:8642 -hostname search.example.net
 
 Use a hostname or IP clients can reach. `-hostname` sets the generated
 certificate's name and is required for wildcard binds. The first start creates
-a persistent identity in `dir/trust/identity.json`; later starts retain it.
-The host prints the public certificate path `dir/trust/host.pem`, its SHA-256
+a persistent identity in `SEARCH_HOME/trust/identity.json`; later starts retain it.
+The host prints the public certificate path `SEARCH_HOME/trust/host.pem`, its SHA-256
 fingerprint, and a random one-use code. Copy only `host.pem` to the client and
 compare the fingerprint through a trusted channel. Never copy `identity.json`:
 it includes the private key.
@@ -43,7 +43,7 @@ The command prints only the new one-use code and invalidates the previous code.
 The identity and existing device credentials persist.
 
 Only the code hash, creation/expiry timestamps, attempt count and consumed state
-are stored in owner-only `dir/trust/pairing.json`. Renewal and admission use the
+are stored in owner-only `SEARCH_HOME/trust/pairing.json`. Renewal and admission use the
 same cross-process file lock. Failed attempts persist, and consumption commits
 before device issuance, so simultaneous requests and process crashes cannot
 reuse a code. If device issuance fails after consumption, run `search pair-code`
@@ -70,7 +70,7 @@ as a fallback. `search serve` always hosts local data even if a remote is select
 Configuration, credentials, fetch policy, index writes and refresh hosts resolve
 on the host. CLI fetch passage formatting remains on the client.
 
-Private files under `dir/trust` use directory mode 0700 and file mode 0600,
+Private files under `SEARCH_HOME/trust` use directory mode 0700 and file mode 0600,
 and must belong to the user running Search.
 Client `remotes.json` contains per-device secrets and certificate pins;
 host `devices.json` contains only device hashes and `pairing.json` contains the

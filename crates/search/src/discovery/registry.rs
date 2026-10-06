@@ -23,7 +23,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Build selected adapters; missing credentials fail their query, not startup.
+    /// Build already-resolved adapters; missing credentials fail at query time.
     pub fn new(engines: &EngineSettings, search: SearchSettings) -> Self {
         let providers: Vec<Arc<dyn Provider>> = configured_providers(engines)
             .into_iter()
@@ -84,11 +84,11 @@ impl Registry {
                     }
                     // A panicking provider must not take the query down; it is
                     // reported as a failed provider beside the results.
-                    Err(join) => panicked.push(ProviderState {
+                    Err(_) => panicked.push(ProviderState {
                         name: "provider".into(),
                         status: ProviderStatus::Error,
                         count: 0,
-                        error: Some(format!("provider task failed: {join}")),
+                        error: Some("provider task failed".into()),
                         elapsed_ms: 0,
                     }),
                 }
