@@ -481,7 +481,7 @@ fn another_process_holding_a_lease_blocks_update_and_remove() {
             0,
             "lease child exited before readiness"
         );
-        if ready.trim() == "ready" {
+        if ready.split_whitespace().last() == Some("ready") {
             break;
         }
     }
