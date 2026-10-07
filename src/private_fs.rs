@@ -353,6 +353,28 @@ fn raw(
     sd: Option<&Local>,
     pin: bool,
 ) -> Result<File, String> {
+    raw_shared(
+        path,
+        access,
+        creation,
+        sd,
+        FILE_SHARE_READ
+            | if pin {
+                0
+            } else {
+                FILE_SHARE_WRITE | FILE_SHARE_DELETE
+            },
+    )
+}
+
+/// Open with explicit sharing for the private destination directory of a replacement.
+fn raw_shared(
+    path: &Path,
+    access: u32,
+    creation: u32,
+    sd: Option<&Local>,
+    sharing: u32,
+) -> Result<File, String> {
     let name = wide(path)?;
     let mut attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -364,12 +386,7 @@ fn raw(
         CreateFileW(
             name.as_ptr(),
             access,
-            FILE_SHARE_READ
-                | if pin {
-                    0
-                } else {
-                    FILE_SHARE_WRITE | FILE_SHARE_DELETE
-                },
+            sharing,
             if sd.is_some() {
                 &mut attributes
             } else {
@@ -526,24 +543,29 @@ pub(crate) fn directories(path: &Path) -> Result<(), String> {
 /// Replace a synced private file on the same volume, retaining ancestor pins through publication.
 #[cfg(feature = "cli")]
 pub(crate) fn replace(temp: &Path, path: &Path) -> Result<(), String> {
-    let pins = parents(path, true, false)?;
     if temp.parent() != path.parent() {
         return Err("private replacement requires the same directory".into());
     }
+    let parent = path.parent().ok_or("private replacement has no parent")?;
+    let _pins = parents(parent, true, false)?;
+    // Windows rename needs write sharing on its destination directory. Only this
+    // owner-only parent permits it; higher ancestors keep strict sharing pins.
+    // Deny delete sharing so the private directory still cannot be replaced.
+    let directory = raw_shared(
+        parent,
+        READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY,
+        OPEN_EXISTING,
+        None,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+    )?;
+    check(&directory, true, Boundary::Private)?;
     private(temp, false, Boundary::Private)?;
     match std::fs::symlink_metadata(path) {
         Ok(_) => private(path, false, Boundary::Settings)?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => (),
         Err(e) => return Err(e.to_string()),
     }
-    let directory = pins
-        .last()
-        .ok_or("private replacement has no parent handle")?;
-    check(directory, true, Boundary::Private)?;
-    let filename = path
-        .file_name()
-        .ok_or("private replacement has no filename")?;
-    let name: Vec<u16> = filename.encode_wide().chain([0]).collect();
+    let name = wide(path)?;
     let source = raw(temp, GENERIC_READ | DELETE, OPEN_EXISTING, None, false)?;
     check(&source, false, Boundary::Private)?;
     let name_bytes = name.len().saturating_sub(1) * size_of::<u16>();
@@ -552,15 +574,13 @@ pub(crate) fn replace(temp: &Path, path: &Path) -> Result<(), String> {
     let mut buffer = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
     let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
     // SAFETY: the zeroed buffer is aligned for FILE_RENAME_INFO and has room for its
-    // variable UTF-16 tail including its NUL. Resolve the filename through the
-    // pinned parent handle, not a new write-open that conflicts with our own
-    // sharing pins. The directory stays live and the name is independent of cwd.
+    // variable UTF-16 tail including its NUL. The absolute name is independent
+    // of cwd; the private destination directory and higher pins stay live.
     unsafe {
         (*info).Anonymous.Flags =
             windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_REPLACE_IF_EXISTS
                 | windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMANTICS;
         (*info).FileNameLength = name_bytes as u32;
-        (*info).RootDirectory = directory.as_raw_handle();
         std::ptr::copy_nonoverlapping(
             name.as_ptr(),
             std::ptr::addr_of_mut!((*info).FileName).cast(),
@@ -756,6 +776,21 @@ mod tests {
         file.read_to_string(&mut previous).unwrap();
         assert_eq!(previous, "old");
         private(&path, false, Boundary::Private).unwrap();
+    }
+
+    /// Replacement's write-sharing exception requires an owner-only parent DACL.
+    #[cfg(feature = "cli")]
+    #[test]
+    fn replacement_rejects_a_shareable_parent() {
+        let temp = Temp::new();
+        let stage = temp.0.join("stage");
+        let target = temp.0.join("target");
+        drop(open(&stage, true, true, false, Boundary::Private).unwrap());
+        dacl(&temp.0, "(A;;FR;;;WD)", true);
+        assert!(replace(&stage, &target).is_err());
+        assert!(stage.exists());
+        assert!(!target.exists());
+        dacl(&temp.0, "", true);
     }
 
     /// Create a mount-point junction through Win32 without developer-mode or symlink privileges.
