@@ -77,6 +77,9 @@ and rejects reparse points/junctions and hard-linked private files. Use a local
 NTFS location; network shares and filesystems without these guarantees are not
 supported for private storage. Windows administrators, like Unix root, are not
 a sandbox boundary.
+Atomic private-file replacement permits write sharing only on its validated
+owner-only destination directory; higher ancestors retain strict sharing pins,
+and directory deletion/renaming stays blocked throughout publication.
 
 The MCP transport also validates the inbound `Host` header, to prevent DNS
 rebinding against a locally running server, so a deployment names the authority
