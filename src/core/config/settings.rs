@@ -171,10 +171,19 @@ pub struct Command {
     /// Resolved package root; callers cannot override it in settings.
     #[serde(skip)]
     pub cwd: PathBuf,
+    /// Private scratch directory exported as TMPDIR, TMP, and TEMP to the child.
+    #[serde(default = "default_command_temp_dir")]
+    pub temp_dir: PathBuf,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default = "default_adapter_cap")]
     pub max_response_bytes: u64,
+}
+
+/// Group command-engine scratch files beneath the canonical OS temp directory.
+fn default_command_temp_dir() -> PathBuf {
+    let base = std::env::temp_dir();
+    base.canonicalize().unwrap_or(base).join("search")
 }
 
 /// The default bound on adapter output, independent of page-fetch limits.

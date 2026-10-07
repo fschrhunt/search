@@ -190,24 +190,23 @@ async fn command(
         .args(&settings.args)
         .current_dir(&settings.cwd)
         .env_clear();
-    for name in [
-        "PATH",
-        "HOME",
-        "TMPDIR",
-        "TMP",
-        "TEMP",
-        "LANG",
-        "SystemRoot",
-        "SYSTEMROOT",
-    ] {
+    for name in ["PATH", "HOME", "LANG", "SystemRoot", "SYSTEMROOT"] {
         if let Some(value) = std::env::var_os(name) {
             process.env(name, value);
         }
     }
     for name in &settings.env {
+        if matches!(name.as_str(), "TMPDIR" | "TMP" | "TEMP") {
+            continue;
+        }
         let value = std::env::var_os(name)
             .ok_or_else(|| EngineError::rejected("custom credential unavailable"))?;
         process.env(name, value);
+    }
+    super::store::command_temp_dir(&settings.temp_dir)
+        .map_err(|_| EngineError::rejected("custom temporary directory unavailable or unsafe"))?;
+    for name in ["TMPDIR", "TMP", "TEMP"] {
+        process.env(name, &settings.temp_dir);
     }
     let mut child = process
         .stdin(Stdio::piped())
@@ -375,6 +374,7 @@ mod tests {
             config: Default::default(),
             env: Vec::new(),
             cwd: std::env::temp_dir(),
+            temp_dir: std::env::temp_dir().canonicalize().unwrap().join("search"),
             args: vec!["-c".into(), script.into()],
             max_response_bytes: cap,
         }
@@ -449,6 +449,49 @@ print(json.dumps({'results':[]}))
         assert!(result.unwrap().is_empty());
         let error = command("fixture", &settings, "q", 1).await.unwrap_err();
         assert_eq!(error.message, "custom credential unavailable");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn commands_use_private_uniform_temp_variables_and_reject_unsafe_paths() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-scratch-test-{}", uuid::Uuid::new_v4()));
+        std::fs::DirBuilder::new()
+            .recursive(false)
+            .create(&root)
+            .unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let scratch = root.join("scratch");
+        let mut settings = executable(
+            r#"
+import json,os,sys,tempfile
+expected=sys.argv[1]
+assert all(os.environ[key] == expected for key in ('TMPDIR','TMP','TEMP'))
+with tempfile.NamedTemporaryFile() as f:
+    assert os.path.dirname(f.name) == expected
+assert os.stat(expected).st_mode & 0o777 == 0o700
+print(json.dumps({'results':[]}))
+"#,
+            4096,
+        );
+        settings.temp_dir = scratch.clone();
+        settings.env = vec!["TMPDIR".into(), "TMP".into(), "TEMP".into()];
+        settings.args.push(scratch.to_string_lossy().into_owned());
+        assert!(command("fixture", &settings, "q", 1)
+            .await
+            .unwrap()
+            .is_empty());
+        let link = root.join("link");
+        symlink(&scratch, &link).unwrap();
+        settings.temp_dir = link;
+        assert!(command("fixture", &settings, "q", 1).await.is_err());
+        std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o777)).unwrap();
+        settings.temp_dir = scratch;
+        assert!(command("fixture", &settings, "q", 1).await.is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

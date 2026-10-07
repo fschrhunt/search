@@ -207,6 +207,16 @@ runtime environment plus declared `env` variables, rather than the host's full
 credential environment. Runtimes and dependencies must already be installed;
 Search runs no dependency installers or installation hooks.
 
+Search sets `TMPDIR`, `TMP`, and `TEMP` to a shared private `search/` directory
+under the host's OS temporary directory (normally `/tmp/search` on Linux),
+overriding inherited or declared values for those three variables. To select
+another location, use `search configure ID temp_dir /absolute/private/path`.
+The parent must already exist; Search creates the directory with owner-only
+permissions and refuses symlinks, foreign ownership, or unsafe permissions.
+It does not remove engine-created files or impose a disk quota. Programs that
+ignore these environment variables are not redirected; command engines remain
+trusted host code, not sandboxed processes.
+
 For another language, change the command, arguments, assets, and runtime names.
 A Node program uses `command: "node"` and `requires: ["node"]`. A native binary
 can use `command: "./adapter"`, `files: ["adapter"]`, and
@@ -284,6 +294,10 @@ and usable, but must be maintained as custom packages.
 New security restrictions may reject unsafe packages; exceptions require release
 notes and migration guidance. Runtime availability, upstream API changes, and
 service credentials remain the engine author's responsibility.
+
+Temporary-directory migration: command engines no longer inherit raw `TMPDIR`,
+`TMP`, or `TEMP` values. Use the adapter's `temp_dir` setting if an integration
+needs its previous scratch location; package working directories are unchanged.
 
 ## Operations and troubleshooting
 
