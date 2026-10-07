@@ -381,25 +381,37 @@ fn raw_shared(
         lpSecurityDescriptor: sd.map_or(null_mut(), |sd| sd.0),
         bInheritHandle: 0,
     };
-    // SAFETY: all input buffers and optional descriptor remain live through CreateFileW.
-    let handle = unsafe {
-        CreateFileW(
-            name.as_ptr(),
-            access,
-            sharing,
-            if sd.is_some() {
-                &mut attributes
-            } else {
-                null_mut()
-            },
-            creation,
-            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
-            null_mut(),
-        )
+    let mut attempt = 0;
+    let handle = loop {
+        // SAFETY: all input buffers and optional descriptor remain live through CreateFileW.
+        let handle = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                access,
+                sharing,
+                if sd.is_some() {
+                    &mut attributes
+                } else {
+                    null_mut()
+                },
+                creation,
+                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                null_mut(),
+            )
+        };
+        if handle != INVALID_HANDLE_VALUE {
+            break handle;
+        }
+        // An atomic publisher briefly write-opens its parent, conflicting with
+        // concurrent reader pins. Retry only sharing conflicts for at most 200 ms;
+        // persistent conflicts and every security/access failure still fail closed.
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_SHARING_VIOLATION as i32) || attempt == 20 {
+            return Err(error.to_string());
+        }
+        attempt += 1;
+        std::thread::sleep(std::time::Duration::from_millis(10));
     };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(last_error());
-    }
     // SAFETY: successful CreateFileW returned a new uniquely owned handle.
     let file = unsafe { File::from_raw_handle(handle) };
     if reparse(&file.metadata().map_err(|e| e.to_string())?) {
@@ -786,6 +798,23 @@ mod tests {
         file.read_to_string(&mut previous).unwrap();
         assert_eq!(previous, "old");
         private(&path, false, Boundary::Private).unwrap();
+    }
+
+    /// Reader pins tolerate the transient write-open used by atomic publication.
+    #[test]
+    fn reader_pin_waits_for_a_transient_publisher_handle() {
+        let temp = Temp::new();
+        let parent = temp.0.clone();
+        let (ready, started) = std::sync::mpsc::channel();
+        let publisher = std::thread::spawn(move || {
+            let _directory = raw(&parent, GENERIC_WRITE, OPEN_EXISTING, None, false).unwrap();
+            ready.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        });
+        started.recv().unwrap();
+        let result = parents(&temp.0.join("child"), true, false);
+        publisher.join().unwrap();
+        drop(result.unwrap());
     }
 
     /// A short-lived reader pin must not make an otherwise serialized update fail.
