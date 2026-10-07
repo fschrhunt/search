@@ -52,8 +52,16 @@ fn wide(path: &Path) -> Result<Vec<u16>, String> {
     }
     for part in path.components() {
         match part {
-            Component::Prefix(p)
-                if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) => {}
+            Component::Prefix(p) => match p.kind() {
+                Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                    let root = [drive as u16, b':' as u16, b'\\' as u16, 0];
+                    // SAFETY: root is a live NUL-terminated drive-root string.
+                    if unsafe { GetDriveTypeW(root.as_ptr()) } == DRIVE_REMOTE {
+                        return Err("storage paths must not use mapped network drives".into());
+                    }
+                }
+                _ => return Err("storage path must be a contained local disk path".into()),
+            },
             Component::RootDir => (),
             Component::Normal(name) => {
                 let name = name.to_string_lossy();

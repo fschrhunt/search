@@ -26,8 +26,25 @@ if ([string]::IsNullOrWhiteSpace($releases)) {
 }
 $releases = $releases.TrimEnd('/')
 
+# Desktop PowerShell may default to TLS 1.0; use TLS 1.2 only for this request.
+function Invoke-SearchRequest([string]$Uri, [string]$OutFile = '') {
+    $parameters = @{ Uri = $Uri; UseBasicParsing = $true }
+    if ($OutFile) { $parameters.OutFile = $OutFile } else { $parameters.Method = 'Head' }
+    $previous = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        }
+        Invoke-WebRequest @parameters
+    } finally {
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            [Net.ServicePointManager]::SecurityProtocol = $previous
+        }
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($Version)) {
-    $response = Invoke-WebRequest -Uri "$releases/latest" -Method Head -UseBasicParsing
+    $response = Invoke-SearchRequest -Uri "$releases/latest"
     if ($response.BaseResponse.PSObject.Properties['ResponseUri']) {
         $landing = $response.BaseResponse.ResponseUri.AbsoluteUri
     } else {
@@ -64,9 +81,9 @@ New-Item -ItemType Directory -Path $work | Out-Null
 try {
     Write-Host "Installing Search $Version for windows/$arch"
     $zip = Join-Path $work $archive
-    Invoke-WebRequest -Uri "$releases/download/$Version/$archive" -OutFile $zip -UseBasicParsing
+    Invoke-SearchRequest -Uri "$releases/download/$Version/$archive" -OutFile $zip
     $checksums = Join-Path $work 'checksums.txt'
-    Invoke-WebRequest -Uri "$releases/download/$Version/checksums.txt" -OutFile $checksums -UseBasicParsing
+    Invoke-SearchRequest -Uri "$releases/download/$Version/checksums.txt" -OutFile $checksums
     $checksumLines = @(Get-Content -LiteralPath $checksums | Where-Object {
         $_ -match ('^[a-fA-F0-9]{64}\s+' + [regex]::Escape($archive) + '$')
     })

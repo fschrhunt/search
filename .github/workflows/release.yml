@@ -80,11 +80,18 @@ jobs:
           TRIPLE: ${{ matrix.triple }}
         run: |
           test "$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')" = "$TRIPLE"
+      - name: Select a user-owned Windows test temp directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $temp = Join-Path $env:LOCALAPPDATA 'Temp'
+          New-Item -ItemType Directory -Path $temp -Force | Out-Null
+          "SEARCH_TEST_TEMP=$temp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: ./x check
         env:
-          TMPDIR: ${{ runner.temp }}
-          TMP: ${{ runner.temp }}
-          TEMP: ${{ runner.temp }}
+          TMPDIR: ${{ env.SEARCH_TEST_TEMP || runner.temp }}
+          TMP: ${{ env.SEARCH_TEST_TEMP || runner.temp }}
+          TEMP: ${{ env.SEARCH_TEST_TEMP || runner.temp }}
       - name: Build native release binary
         env:
           TAG: ${{ github.ref_name }}
@@ -224,7 +231,7 @@ jobs:
         run: |
           ./install.ps1 -Version $env:TAG -Dir "$env:RUNNER_TEMP/search-bin"
           if ((& "$env:RUNNER_TEMP/search-bin/search.exe" version) -ne $env:TAG) { throw 'Installed version mismatch' }
-          $env:SEARCH_HOME = "$env:RUNNER_TEMP/search-home"
+          $env:SEARCH_HOME = Join-Path $env:LOCALAPPDATA ('Search-install-smoke-' + [Guid]::NewGuid())
           & "$env:RUNNER_TEMP/search-bin/search.exe" engines available
           if ($LASTEXITCODE -ne 0) { throw 'Catalog inspection failed' }
           & "$env:RUNNER_TEMP/search-bin/search.exe" install searxng

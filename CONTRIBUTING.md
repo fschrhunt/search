@@ -26,9 +26,10 @@ not need Python at runtime.
 - `./x guard` — `scripts/guard.sh`, the security-surface audit
 
 CI runs `./x check` natively on Linux, macOS, and Windows, each on x86_64 and ARM64.
-Tests use local fixtures and mock servers, not live engine queries. CI points
-`TMPDIR` at the runner's temporary directory to avoid macOS's symlinked `/var`
-path in fixtures that deliberately reject symlink ancestors.
+Tests use local fixtures and mock servers, not live engine queries. Unix CI
+points `TMPDIR` at the runner's temporary directory to avoid macOS's symlinked
+`/var` path. Windows security fixtures use user-profile temporary storage rather
+than shared runner directories whose ownership/ACLs may legitimately be refused.
 
 Windows contributors need Visual Studio's C++ build tools/Windows SDK, Python,
 and Git Bash for `./x`. Run `cargo build --locked` directly from PowerShell for

@@ -59,12 +59,20 @@ jobs:
           TRIPLE: ${{ matrix.triple }}
         run: |
           test "$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')" = "$TRIPLE"
+      - name: Select a user-owned Windows test temp directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $temp = Join-Path $env:LOCALAPPDATA 'Temp'
+          New-Item -ItemType Directory -Path $temp -Force | Out-Null
+          "SEARCH_TEST_TEMP=$temp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: ./x check
         env:
           # Avoid macOS's /var -> /private/var alias in security-sensitive fixtures.
-          TMPDIR: ${{ runner.temp }}
-          TMP: ${{ runner.temp }}
-          TEMP: ${{ runner.temp }}
+          # Windows's shared runner temp need not have trustworthy ACLs/ownership.
+          TMPDIR: ${{ env.SEARCH_TEST_TEMP || runner.temp }}
+          TMP: ${{ env.SEARCH_TEST_TEMP || runner.temp }}
+          TEMP: ${{ env.SEARCH_TEST_TEMP || runner.temp }}
       - name: Build the native release profile
         run: ./x build --release
         env:
@@ -79,3 +87,7 @@ jobs:
           cargo build --locked --bin search
           if ($LASTEXITCODE -ne 0) { throw 'Installer fixture build failed' }
           ./scripts/test-install.ps1 -Binary target/debug/search.exe -Version v0.0.0
+      - name: Check the installer with Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-install.ps1 -Binary target/debug/search.exe -Version v0.0.0
