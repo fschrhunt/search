@@ -587,15 +587,25 @@ pub(crate) fn replace(temp: &Path, path: &Path) -> Result<(), String> {
             name.len(),
         );
     }
-    // SAFETY: source owns a DELETE-capable no-reparse handle and the information
-    // buffer stays live. POSIX replacement preserves old handles and the new ACL.
-    if unsafe {
-        SetFileInformationByHandle(source.as_raw_handle(), FileRenameInfoEx, info.cast(), bytes)
-    } == 0
-    {
-        return Err(format!("private file replacement failed: {}", last_error()));
+    // Independent readers briefly pin this same parent without write sharing.
+    // Retry only that transient conflict, bounded to 200 ms; all validated
+    // handles and directory pins remain live, and every other error fails closed.
+    for attempt in 0..=20 {
+        // SAFETY: source owns a DELETE-capable no-reparse handle and the information
+        // buffer stays live. POSIX replacement preserves old handles and the new ACL.
+        if unsafe {
+            SetFileInformationByHandle(source.as_raw_handle(), FileRenameInfoEx, info.cast(), bytes)
+        } != 0
+        {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_SHARING_VIOLATION as i32) || attempt == 20 {
+            return Err(format!("private file replacement failed: {error}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    Ok(())
+    Err("private file replacement retry limit exceeded".into())
 }
 
 #[cfg(test)]
@@ -776,6 +786,29 @@ mod tests {
         file.read_to_string(&mut previous).unwrap();
         assert_eq!(previous, "old");
         private(&path, false, Boundary::Private).unwrap();
+    }
+
+    /// A short-lived reader pin must not make an otherwise serialized update fail.
+    #[cfg(feature = "cli")]
+    #[test]
+    fn replacement_waits_for_a_transient_reader_pin() {
+        let temp = Temp::new();
+        let stage = temp.0.join("stage");
+        let target = temp.0.join("target");
+        drop(open(&stage, true, true, false, Boundary::Private).unwrap());
+        let reader_path = target.clone();
+        let (ready, started) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _pins = parents(&reader_path, true, false).unwrap();
+            ready.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        });
+        started.recv().unwrap();
+        let result = replace(&stage, &target);
+        reader.join().unwrap();
+        result.unwrap();
+        assert!(target.exists());
+        assert!(!stage.exists());
     }
 
     /// Replacement's write-sharing exception requires an owner-only parent DACL.
