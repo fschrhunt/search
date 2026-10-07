@@ -17,7 +17,7 @@ use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::*, *},
     Storage::FileSystem::*,
-    System::Threading::*,
+    System::{Threading::*, WindowsProgramming::DRIVE_REMOTE},
 };
 
 /// Storage boundaries distinguish private data, shareable settings and trusted ancestors.
