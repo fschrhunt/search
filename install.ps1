@@ -115,7 +115,7 @@ try {
     $next = Join-Path $Dir ('.search-' + [Guid]::NewGuid() + '.exe')
     Copy-Item -LiteralPath $binary -Destination $next
     if (Test-Path -LiteralPath $destination) {
-        [IO.File]::Replace($next, $destination, $null)
+        [IO.File]::Replace($next, $destination, [System.Management.Automation.Language.NullString]::Value)
     } else {
         [IO.File]::Move($next, $destination)
     }
