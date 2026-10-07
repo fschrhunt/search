@@ -1,5 +1,8 @@
 //! Offline package CLI contracts. Every subprocess owns its home and installs explicit fixtures.
 
+#[cfg(windows)]
+#[path = "../support/windows.rs"]
+mod windows;
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -32,7 +35,10 @@ fn text_search_reports_engine_failures_without_leaking_program_stderr() {
 impl Fixture {
     /// Write a declarative package whose program runs only through an explicit engine test.
     fn new(script: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("search-engines-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-engines-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
         #[cfg(unix)]
         {
@@ -80,13 +86,17 @@ impl Fixture {
             )
             .unwrap();
         }
+        #[cfg(windows)]
+        for path in [&root, &home, &config, &trust, &trust.join("remotes.json")] {
+            windows::secure(path);
+        }
         let package = root.join("source");
         fs::create_dir(&package).unwrap();
         fs::write(
             package.join("engine.json"),
             serde_json::to_vec(&json!({
                 "schema_version": 1, "id": "fixture", "version": "1", "description": "CLI fixture",
-                "adapter": {"type": "command", "command": "python3", "args": ["program.py"]},
+                "adapter": {"type": "command", "command": if cfg!(windows) { "python.exe" } else { "python3" }, "args": ["program.py"]},
                 "files": ["program.py"]
             }))
             .unwrap(),
@@ -439,6 +449,8 @@ fn settings_updates_serialize_and_explicit_config_does_not_move_package_home() {
     fixture.install();
     let alternate = fixture.root.join("alternate.json");
     fs::copy(&fixture.config, &alternate).unwrap();
+    #[cfg(windows)]
+    windows::secure(&alternate);
     let mut children = Vec::new();
     for (key, value) in [
         ("env", r#"["FIXTURE_DECLARED"]"#),
@@ -730,6 +742,42 @@ fn prerequisite_diagnostics_inspect_names_and_presence_without_execution() {
         assert!(!bin.join("search-cli-requirement-fixture.ran").exists());
         assert!(!fixture.home.join("engines/fixture/ran").exists());
     }
+    #[cfg(windows)]
+    {
+        let bin = fixture.root.join("bin");
+        fs::create_dir(&bin).unwrap();
+        let executable = bin.join("search-cli-requirement-fixture.EXE");
+        // Only inspection occurs: a bogus PE is sufficient to prove no execution or version probe.
+        fs::write(&executable, b"not a program").unwrap();
+        let output = fixture
+            .process(&["engines", "enable", "fixture", "--trust"])
+            .env("PATH", &bin)
+            .env("PATHEXT", ".EXE;.CMD")
+            .env("SEARCH_CLI_MISSING_ENV", "credential-secret")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(!fixture.home.join("engines/fixture/ran").exists());
+        let no_extension = fixture
+            .process(&["engines", "list"])
+            .env("PATH", &bin)
+            .env("PATHEXT", ".CMD")
+            .env("SEARCH_CLI_MISSING_ENV", "credential-secret")
+            .output()
+            .unwrap();
+        assert!(no_extension.status.success());
+        let rows: Value = serde_json::from_slice(&no_extension.stdout).unwrap();
+        let row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "fixture")
+            .unwrap();
+        assert_eq!(
+            row["missing_executables"],
+            json!(["search-cli-requirement-fixture"])
+        );
+    }
 }
 
 #[test]
@@ -756,4 +804,32 @@ fn embedded_default_cannot_be_replaced_by_local_code() {
     let rows: Value = serde_json::from_slice(&listed.stdout).unwrap();
     assert_eq!(rows[0]["source"], "embedded");
     assert_eq!(rows[0]["enabled"], true);
+}
+
+/// A Git Bash HOME must not redirect native Windows's implicit package root.
+#[cfg(windows)]
+#[test]
+fn implicit_windows_home_uses_userprofile_and_explicit_home_still_wins() {
+    let fixture = Fixture::new("");
+    let profile = fixture.root.join("profile");
+    fs::create_dir(&profile).unwrap();
+    windows::secure(&profile);
+    let output = fixture
+        .process(&["engines", "install", "mwmbl"])
+        .env_remove("SEARCH_HOME")
+        .env("USERPROFILE", &profile)
+        .env("HOME", "/git-bash-home")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(profile.join(".search/engines/mwmbl/engine.json").is_file());
+    let explicit = fixture.root.join("explicit");
+    let output = fixture
+        .process(&["engines", "install", "mwmbl"])
+        .env("SEARCH_HOME", &explicit)
+        .env("USERPROFILE", "relative-invalid-profile")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(explicit.join("engines/mwmbl/engine.json").is_file());
 }

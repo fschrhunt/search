@@ -39,7 +39,8 @@ for field and execution guarantees and required security migrations.
 The caller supplies an absolute home whose parent already exists. Installation
 creates a private home and `engines/` beneath it, or requires existing private
 current-user-owned directories. Mutations reject symlink/parent traversal and
-foreign-owned or externally writable ancestors. Root-owned sticky `/tmp` is
+foreign-owned or externally writable ancestors. Root-owned sticky `/tmp`
+(also its canonical `/private/tmp` location on macOS) is
 allowed with private current-user-owned descendants. Root ownership is read
 from the filesystem root, including when host root is unmapped in a UID namespace.
 Unix stores use mode 0700 directories and 0600 files. Only assets explicitly
@@ -48,8 +49,15 @@ file. Executable permissions are validated when reading installed packages.
 Opened control-file handles are checked for ownership, permissions, link count
 and identity using no-follow directory-descriptor walks.
 
-Disk installation fails closed on non-Unix platforms; embedded metadata/default
-operation is portable. Explicit local relative paths are allowed; there is no
+Windows creates directories, control files and assets with an explicit protected
+DACL granting the current token user alone full access. Handle checks reject
+foreign owners, public grants, unprotected private DACLs and hard links. Ancestors
+may be administered by SYSTEM, Administrators or TrustedInstaller, but other
+principals may not replace their children or rewrite their security. Ancestor
+handles are pinned against rename and write during no-follow opens; junctions
+and every other reparse tag are rejected. Windows paths must be local disk paths;
+UNC/device namespaces, alternate data streams and reserved filename aliases
+fail closed. Explicit local relative paths are allowed; there is no
 implicit project/cwd discovery. Declare every package file (`engine.json` is
 included automatically); undeclared files/dirs and symlinks are rejected.
 Build-time embedding and runtime installation share one manifest schema and
@@ -79,8 +87,12 @@ files nor recover interrupted operations. An absent disk Mwmbl falls back to
 embedded metadata even if unrelated store metadata/control files are damaged.
 A present but damaged disk Mwmbl fails closed. Only mutation commands recover
 unpublished stages, interrupted replacements and deletion tombstones. Linux
-updates exchange directories atomically; other Unix platforms use recoverable
-renames while excluding API readers with the store lock.
+updates exchange directories atomically; macOS and Windows use recoverable
+renames while excluding API readers with the store lock. Windows closes an
+exclusive lease after publication/tombstoning and before deleting the old tree,
+while the store lock still excludes readers. File contents are synced on both
+platforms; Win32 cannot flush directory handles, so Windows directory renames
+do not promise Unix-style power-loss durability.
 
 Remove validates and exclusively leases the managed live package before renaming
 it to a private deletion tombstone, syncing the parent and deleting its contents.

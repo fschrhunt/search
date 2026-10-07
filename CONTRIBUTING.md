@@ -25,8 +25,16 @@ not need Python at runtime.
 - `./x shell` — syntax checks for `x`, `install.sh`, and `scripts/*.sh`
 - `./x guard` — `scripts/guard.sh`, the security-surface audit
 
-CI runs `./x check` too. Tests use local fixtures and mock servers, not live
-engine queries.
+CI runs `./x check` natively on Linux, macOS, and Windows, each on x86_64 and ARM64.
+Tests use local fixtures and mock servers, not live engine queries. CI points
+`TMPDIR` at the runner's temporary directory to avoid macOS's symlinked `/var`
+path in fixtures that deliberately reject symlink ancestors.
+
+Windows contributors need Visual Studio's C++ build tools/Windows SDK, Python,
+and Git Bash for `./x`. Run `cargo build --locked` directly from PowerShell for
+a normal build. CI also tests the PowerShell installer against local release
+fixtures, including update and checksum failure. Windows ARM64 CI uses GitHub's
+native ARM runner; no local Windows device is needed to contribute.
 
 `./x` defaults to `check` and does not rewrite source files or lockfiles.
 `./x help` lists commands. Build, fmt, lint, and test forward Cargo arguments;

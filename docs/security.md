@@ -71,6 +71,13 @@ is used. Credential-bearing clients refuse redirects, proxies and plaintext.
 Browser Origin headers are refused. Trust files are owner-only and separate
 from settings; a corrupt registry fails closed. See [remote](remote.md).
 
+Unix private storage uses current-user ownership and restrictive permissions.
+Windows uses protected current-user DACLs, validates security on opened handles,
+and rejects reparse points/junctions and hard-linked private files. Use a local
+NTFS location; network shares and filesystems without these guarantees are not
+supported for private storage. Windows administrators, like Unix root, are not
+a sandbox boundary.
+
 The MCP transport also validates the inbound `Host` header, to prevent DNS
 rebinding against a locally running server, so a deployment names the authority
 it is reached by.

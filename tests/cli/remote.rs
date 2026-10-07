@@ -1,4 +1,7 @@
 //! Offline end-to-end pairing, exclusive routing, stdio MCP and revocation.
+#[cfg(windows)]
+#[path = "../support/windows.rs"]
+mod windows;
 use search::cli::auth::{self, Credential, Devices, Host, Remotes};
 use search::client::{self as client_api, Client, Operation, Remote};
 use std::{path::PathBuf, sync::Arc};
@@ -16,7 +19,10 @@ impl Fixture {
         Self::with_window(std::time::Duration::from_secs(900)).await
     }
     async fn with_window(window: std::time::Duration) -> Self {
-        let root = std::env::temp_dir().join(format!("search-remote-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-remote-{}", uuid::Uuid::new_v4()));
         let host = Arc::new(Host::open(&root, "localhost", window).unwrap());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -190,6 +196,8 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
     let fixture = Fixture::new().await;
     let client_root = fixture.root.join("client");
     std::fs::create_dir_all(&client_root).unwrap();
+    #[cfg(windows)]
+    windows::secure(&client_root);
     let config_path = client_root.join("settings.json");
     std::fs::write(
         &config_path,
@@ -337,7 +345,7 @@ fn install_fixture(home: &std::path::Path) {
         serde_json::json!({
             "schema_version": 1, "id": "fixture", "version": "1",
             "description": "Offline remote routing fixture",
-            "adapter": {"type": "command", "command": "python3", "args": ["program.py"]},
+            "adapter": {"type": "command", "command": if cfg!(windows) { "python.exe" } else { "python3" }, "args": ["program.py"]},
             "files": ["program.py"]
         })
         .to_string(),

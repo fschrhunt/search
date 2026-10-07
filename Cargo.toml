@@ -46,13 +46,22 @@ rcgen = { version = "0.14", optional = true }
 subtle = { version = "2", optional = true }
 fs2 = { version = "0.4", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
 [build-dependencies]
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+[target.'cfg(windows)'.build-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["net"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_IO", "Win32_System_Ioctl", "Win32_System_SystemServices"] }
 
 [[test]]
 name = "cli_engines"

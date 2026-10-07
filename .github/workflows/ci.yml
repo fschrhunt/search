@@ -11,15 +11,71 @@ permissions:
   contents: read
 
 jobs:
-  Linux:
-    runs-on: ubuntu-latest
+  check:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-24.04
+            triple: x86_64-unknown-linux-gnu
+          - name: Linux (ARM64)
+            os: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-gnu
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+            triple: aarch64-apple-darwin
+          - name: macOS (Intel)
+            os: macos-15-intel
+            triple: x86_64-apple-darwin
+          - name: Windows
+            os: windows-latest
+            triple: x86_64-pc-windows-msvc
+          - name: Windows (ARM64)
+            os: windows-11-arm
+            triple: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTUP_TOOLCHAIN: 1.98.0-${{ matrix.triple }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # stable
         with:
-          toolchain: 1.98.0
+          toolchain: 1.98.0-${{ matrix.triple }}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+          architecture: ${{ startsWith(matrix.triple, 'aarch64') && 'arm64' || 'x64' }}
+      - name: Verify native Rust host
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          test "$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')" = "$TRIPLE"
       - run: ./x check
+        env:
+          # Avoid macOS's /var -> /private/var alias in security-sensitive fixtures.
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+      - name: Build the native release profile
+        run: ./x build --release
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+      - name: Check Windows installer syntax and behavior
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SEARCH_BUILD_VERSION: v0.0.0
+          SEARCH_BUILD_CHANNEL: release
+        run: |
+          cargo build --locked --bin search
+          if ($LASTEXITCODE -ne 0) { throw 'Installer fixture build failed' }
+          ./scripts/test-install.ps1 -Binary target/debug/search.exe -Version v0.0.0

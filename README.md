@@ -33,6 +33,10 @@ APIs—as [custom HTTP or command engines](docs/engines.md#custom-engines).
 
 Download the official installer, review it, then run it:
 
+The shell instructions below are for Linux and macOS. On Windows, use the
+[PowerShell installer](docs/install.md#windows). All three systems have native
+x86_64 and ARM64 CI and release targets.
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fschrhunt/search/main/install.sh -o install-search.sh
 less install-search.sh

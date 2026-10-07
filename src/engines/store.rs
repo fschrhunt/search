@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -47,8 +47,12 @@ fn safe_path(path: &Path) -> Result<(), String> {
     let mut prefix = PathBuf::new();
     for part in path.components() {
         prefix.push(part);
+        // A Windows drive prefix alone is drive-relative; inspect its root on the next step.
+        if matches!(part, Component::Prefix(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&prefix) {
-            Ok(meta) if meta.file_type().is_symlink() => {
+            Ok(meta) if meta.file_type().is_symlink() || is_reparse(&meta) => {
                 return Err("engine paths must not contain symlinks".into())
             }
             Ok(_) => (),
@@ -57,6 +61,19 @@ fn safe_path(path: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Windows junctions and non-symlink reparse points are unsafe package paths too.
+fn is_reparse(meta: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        crate::private_fs::reparse(meta)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = meta;
+        false
+    }
 }
 
 /// Detect even dangling symlinks as existing objects, so collisions fail closed.
@@ -89,8 +106,9 @@ fn trusted_ancestors(path: &Path) -> Result<(), String> {
         }
         let dir = read_file(&prefix)?;
         let m = dir.metadata().map_err(io_error)?;
-        let sticky_tmp =
-            prefix == Path::new("/tmp") && m.uid() == root_uid && m.mode() & 0o1000 != 0;
+        let system_tmp = prefix == Path::new("/tmp")
+            || (cfg!(target_os = "macos") && prefix == Path::new("/private/tmp"));
+        let sticky_tmp = system_tmp && m.uid() == root_uid && m.mode() & 0o1000 != 0;
         if !m.is_dir()
             || (m.uid() != root_uid && m.uid() != uid)
             || (m.mode() & 0o022 != 0 && !sticky_tmp)
@@ -106,10 +124,10 @@ fn trusted_ancestors(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Unsupported disk ownership guarantees fail before any mutation.
-#[cfg(not(unix))]
-fn trusted_ancestors(_path: &Path) -> Result<(), String> {
-    Err("private engine installation is unsupported on this platform".into())
+/// Windows ancestors must resist replacement by untrusted principals.
+#[cfg(windows)]
+fn trusted_ancestors(path: &Path) -> Result<(), String> {
+    crate::private_fs::trusted_ancestors(path)
 }
 
 /// Require current-user ownership and owner-only access for store objects.
@@ -135,15 +153,10 @@ fn private_metadata(m: &fs::Metadata, directory: bool) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn private_metadata(_m: &fs::Metadata, _directory: bool) -> Result<(), String> {
-    Err("private engine installation is unsupported on this platform".into())
-}
-
-/// Fail closed where ownership and no-follow primitives are unavailable.
-#[cfg(not(unix))]
-fn private(_path: &Path, _directory: bool) -> Result<(), String> {
-    Err("private engine installation is unsupported on this platform".into())
+/// Windows validates ownership and protected DACLs through a no-follow handle.
+#[cfg(windows)]
+fn private(path: &Path, directory: bool) -> Result<(), String> {
+    crate::private_fs::private(path, directory, crate::private_fs::Boundary::Private)
 }
 
 /// Create a private directory without changing permissions of existing objects.
@@ -158,12 +171,15 @@ fn mkdir(path: &Path) -> Result<(), String> {
             Err(e) => return Err(io_error(e)),
         }
     }
+    #[cfg(windows)]
+    crate::private_fs::mkdir(path)?;
     private(path, true)
 }
 
 /// Open files without following symlinks and with restrictive creation mode.
-fn options(write: bool) -> OpenOptions {
-    let mut options = OpenOptions::new();
+#[cfg(unix)]
+fn options(write: bool) -> fs::OpenOptions {
+    let mut options = fs::OpenOptions::new();
     options.read(true).write(write);
     #[cfg(unix)]
     {
@@ -214,18 +230,29 @@ fn read_file(path: &Path) -> Result<File, String> {
     Ok(dir)
 }
 
-/// Read-only embedded operation is portable; disk installs fail closed in private().
-#[cfg(not(unix))]
+/// Windows pins intermediate directories and rejects all reparse tags on the opened handle.
+#[cfg(windows)]
 fn read_file(path: &Path) -> Result<File, String> {
-    options(false).open(path).map_err(io_error)
+    crate::private_fs::read(path)
 }
 
 /// Open a no-follow file, validate ownership on its handle and confirm path/handle identity.
 fn owned_file(path: &Path) -> Result<File, String> {
     safe_path(path)?;
     private(path, false)?;
+    #[cfg(windows)]
+    let file = crate::private_fs::open(
+        path,
+        false,
+        false,
+        false,
+        crate::private_fs::Boundary::Private,
+    )?;
+    #[cfg(unix)]
     let file = read_file(path)?;
+    #[cfg(unix)]
     let opened = file.metadata().map_err(io_error)?;
+    #[cfg(unix)]
     private_metadata(&opened, false)?;
     #[cfg(unix)]
     {
@@ -279,13 +306,25 @@ fn read(path: &Path, cap: u64, owned: bool) -> Result<Vec<u8>, String> {
 /// Create and sync new owner-only assets and control files.
 fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     safe_path(path)?;
+    #[cfg(windows)]
+    let mut file = crate::private_fs::open(
+        path,
+        true,
+        true,
+        false,
+        crate::private_fs::Boundary::Private,
+    )?;
+    #[cfg(unix)]
     let mut file = options(true)
         .create_new(true)
         .open(path)
         .map_err(io_error)?;
     file.write_all(bytes).map_err(io_error)?;
     file.sync_all().map_err(io_error)?;
+    #[cfg(unix)]
     private_metadata(&file.metadata().map_err(io_error)?, false)?;
+    #[cfg(windows)]
+    crate::private_fs::check(&file, false, crate::private_fs::Boundary::Private)?;
     private(path, false)?;
     sync_dir(path.parent().ok_or("package file parent missing")?)
 }
@@ -388,7 +427,7 @@ fn package(path: &Path, owned: bool, controls: bool) -> Result<(Manifest, Assets
                 format!("{prefix}/{name}")
             };
             let meta = fs::symlink_metadata(&entry).map_err(io_error)?;
-            if meta.file_type().is_symlink() {
+            if meta.file_type().is_symlink() || is_reparse(&meta) {
                 return Err("package contains a symlink".into());
             }
             if controls && prefix.is_empty() && (name == ".receipt.json" || name == ".lease") {
@@ -575,6 +614,10 @@ impl Store {
                 let live = self.root.join(id);
                 if exists(&live)? {
                     self.installed(id, false)?;
+                    // Windows cannot remove a directory with a delete-pending lease file.
+                    // The store lock still excludes readers after the exclusive lease is closed.
+                    #[cfg(windows)]
+                    drop(_lease);
                     delete(&path)?;
                 } else {
                     // Old copies still have complete receipts/assets; validate before restoring.
@@ -597,6 +640,8 @@ impl Store {
                 } else {
                     None
                 };
+                #[cfg(windows)]
+                drop(_lease);
                 delete(&path)?;
                 sync_dir(&self.root)?;
             } else if let Some(token) = name.strip_prefix(".stage-") {
@@ -609,12 +654,20 @@ impl Store {
     }
 }
 
-/// Flush directory entries for durable staged publication.
+/// Unix flushes directory entries; Windows syncs file content before its recoverable renames.
+/// Win32 directory handles do not support FlushFileBuffers; mutation recovery covers rename gaps.
+#[cfg(unix)]
 fn sync_dir(path: &Path) -> Result<(), String> {
     File::open(path)
         .map_err(io_error)?
         .sync_all()
         .map_err(io_error)
+}
+
+/// Windows checks the directory boundary; directory flushing is unavailable in Win32.
+#[cfg(windows)]
+fn sync_dir(path: &Path) -> Result<(), String> {
+    private(path, true)
 }
 
 /// Remove owned store trees only, rejecting symlinks instead of following them.
@@ -760,7 +813,7 @@ fn replace(stage: &Path, live: &Path, old: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Portable Unix replacement excludes API readers through the held lock; recovery rolls back gaps.
+/// Portable replacement excludes API readers through the held lock; recovery rolls back gaps.
 #[cfg(not(target_os = "linux"))]
 fn replace(stage: &Path, live: &Path, old: &Path) -> Result<(), String> {
     fs::rename(live, old).map_err(io_error)?;
@@ -792,6 +845,9 @@ pub fn update(home: &Path, id: &str) -> Result<Installed, String> {
         return Err(error);
     }
     sync_dir(&store.root)?;
+    // Publication finished under the store lock; close the old Windows lease before deletion.
+    #[cfg(windows)]
+    drop(_lease);
     delete(&old)?;
     sync_dir(&store.root)?;
     store.installed(id, false)
@@ -812,6 +868,9 @@ pub fn remove(home: &Path, id: &str) -> Result<(), String> {
     let tombstone = store.root.join(format!(".delete-{}", uuid::Uuid::new_v4()));
     fs::rename(store.root.join(id), &tombstone).map_err(io_error)?;
     sync_dir(&store.root)?;
+    // The tombstone is no longer resolvable and the store lock excludes new readers.
+    #[cfg(windows)]
+    drop(_lease);
     delete(&tombstone)?;
     sync_dir(&store.root)
 }

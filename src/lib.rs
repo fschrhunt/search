@@ -18,6 +18,8 @@ pub mod core;
 pub mod engines;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+#[cfg(windows)]
+mod private_fs;
 
 /// Release version stamped by the build; local builds use the manifest version.
 pub const VERSION: &str = env!("SEARCH_BUILD_VERSION");

@@ -77,7 +77,10 @@ mod tests {
     /// Opening the default engines must not create anything on disk.
     #[test]
     fn default_open_leaves_disk_untouched() {
-        let dir = std::env::temp_dir().join(format!("search-diskless-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-diskless-{}", uuid::Uuid::new_v4()));
         let config = Config {
             home: dir.join("home"),
             ..Default::default()
@@ -89,7 +92,10 @@ mod tests {
     /// Missing selected packages fail without creating the package home.
     #[test]
     fn invalid_selected_package_does_not_create_home() {
-        let root = std::env::temp_dir().join(format!("search-missing-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-missing-{}", uuid::Uuid::new_v4()));
         let mut config = Config {
             home: root.join("home"),
             ..Default::default()
@@ -103,7 +109,10 @@ mod tests {
     /// Search uses trusted package assets and overrides, retaining leases only while running.
     #[tokio::test]
     async fn installed_package_runs_from_its_root() {
-        let root = std::env::temp_dir().join(format!("search-installed-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-installed-{}", uuid::Uuid::new_v4()));
         let source = root.join("source");
         let home = root.join("home");
         let mut builder = std::fs::DirBuilder::new();
@@ -116,7 +125,7 @@ mod tests {
         builder.create(&source).unwrap();
         let manifest = serde_json::json!({
             "schema_version":1,"id":"fixture","version":"1","description":"offline fixture",
-            "adapter":{"type":"command","command":"python3","args":["runner.py"],"config":{"title":"default"}},
+            "adapter":{"type":"command","command": if cfg!(windows) { "python.exe" } else { "python3" },"args":["runner.py"],"config":{"title":"default"}},
             "files":["runner.py","asset.txt"]
         });
         std::fs::write(

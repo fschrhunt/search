@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
+    fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -12,6 +12,7 @@ use std::{
 use subtle::ConstantTimeEq;
 
 /// Credentials and pairing state live privately under the Search home.
+#[cfg(unix)]
 pub fn dir(root: &Path) -> Result<PathBuf, String> {
     let mut root_builder = fs::DirBuilder::new();
     root_builder.recursive(true);
@@ -43,7 +44,17 @@ pub fn dir(root: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Windows creates trust storage with a protected owner DACL at every new directory.
+#[cfg(windows)]
+pub fn dir(root: &Path) -> Result<PathBuf, String> {
+    crate::private_fs::directories(root)?;
+    let path = root.join("trust");
+    crate::private_fs::directories(&path)?;
+    Ok(path)
+}
+
 /// Refuse symlinks, foreign owners, unexpected types, and public credentials.
+#[cfg(unix)]
 fn check(path: &Path, directory: bool) -> Result<(), String> {
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if (directory && !meta.is_dir()) || (!directory && !meta.is_file()) {
@@ -57,11 +68,13 @@ fn check(path: &Path, directory: bool) -> Result<(), String> {
             return Err("trust storage must be owner-only".into());
         }
     }
-    #[cfg(not(unix))]
-    {
-        return Err("paired trust storage currently requires Unix permissions".into());
-    }
     Ok(())
+}
+
+/// Windows checks trust ACLs and reparse attributes on the opened object.
+#[cfg(windows)]
+fn check(path: &Path, directory: bool) -> Result<(), String> {
+    crate::private_fs::private(path, directory, crate::private_fs::Boundary::Private)
 }
 
 /// Privileged processes must never adopt another user's identity or device registry.
@@ -76,15 +89,50 @@ fn check_owner(meta: &fs::Metadata) -> Result<(), String> {
     Ok(())
 }
 
+/// Open private files no-follow and verify the opened Unix owner and permission boundary.
+#[cfg(unix)]
+fn private_open(path: &Path, create_new: bool, create: bool) -> Result<File, String> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(create_new || create)
+        .create_new(create_new)
+        .create(create)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    check_owner(&meta)?;
+    if !meta.is_file() || meta.mode() & 0o077 != 0 || meta.nlink() != 1 {
+        return Err("trust storage must be an owner-only regular file without hard links".into());
+    }
+    check(path, false)?;
+    Ok(file)
+}
+
+/// Windows checks the current-user owner, protected DACL and link count on the no-follow handle.
+#[cfg(windows)]
+fn private_open(path: &Path, create_new: bool, create: bool) -> Result<File, String> {
+    crate::private_fs::open(
+        path,
+        create_new || create,
+        create_new,
+        create,
+        crate::private_fs::Boundary::Private,
+    )
+}
+
 /// Read a protected JSON file, treating only absence as an empty registry.
 pub fn read<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T, String> {
+    #[cfg(windows)]
+    crate::private_fs::trusted_ancestors(path.parent().ok_or("trust file has no parent")?)?;
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(e.to_string()),
         Ok(_) => {
-            check(path, false)?;
-            serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
-                .map_err(|_| "invalid private trust file".to_string())
+            let file = private_open(path, false, false)?;
+            serde_json::from_reader(file).map_err(|_| "invalid private trust file".to_string())
         }
     }
 }
@@ -95,17 +143,7 @@ pub fn update<T: serde::de::DeserializeOwned + Serialize + Default, R>(
     change: impl FnOnce(&mut T) -> Result<R, String>,
 ) -> Result<R, String> {
     let lock_path = path.with_extension("lock");
-    if lock_path.exists() {
-        check(&lock_path, false)?;
-    }
-    let mut options = OpenOptions::new();
-    options.create(true).read(true).write(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let lock = options.open(&lock_path).map_err(|e| e.to_string())?;
+    let lock = private_open(&lock_path, false, true)?;
     fs2::FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
     let mut value: T = read(path)?;
     let result = change(&mut value)?;
@@ -119,17 +157,14 @@ pub fn update<T: serde::de::DeserializeOwned + Serialize + Default, R>(
 /// Replace a private file with a unique, synced owner-only temporary file.
 fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    let mut options = OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
     let result = (|| {
-        let mut file = options.open(&temp).map_err(|e| e.to_string())?;
+        let mut file = private_open(&temp, true, false)?;
         file.write_all(bytes).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
+        drop(file);
+        #[cfg(windows)]
+        crate::private_fs::replace(&temp, path)?;
+        #[cfg(unix)]
         fs::rename(&temp, path).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         if let Some(parent) = path.parent() {
@@ -339,7 +374,10 @@ mod tests {
     /// Expired, exhausted and consumed codes must never enroll another device.
     #[test]
     fn pairing_bounds_and_hash_storage() {
-        let root = std::env::temp_dir().join(format!("search-trust-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-trust-{}", uuid::Uuid::new_v4()));
         let host = Host::open(&root, "localhost", Duration::from_secs(900)).unwrap();
         let credential = host.pair(&host.code, "laptop").unwrap();
         assert!(host.authorized(&credential.secret));
@@ -372,7 +410,10 @@ mod tests {
     #[test]
     fn private_storage_fails_closed() {
         use std::os::unix::{fs::symlink, fs::PermissionsExt};
-        let root = std::env::temp_dir().join(format!("search-private-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-private-{}", uuid::Uuid::new_v4()));
         let private = dir(&root).unwrap();
         let file = private.join("remotes.json");
         write(&file, b"{}").unwrap();
