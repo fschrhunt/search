@@ -31,8 +31,12 @@ struct Store {
 }
 
 /// All filesystem errors are content- and credential-free.
-fn io_error(_: std::io::Error) -> String {
-    "engine package filesystem operation failed".into()
+fn io_error(error: std::io::Error) -> String {
+    format!(
+        "engine package filesystem operation failed ({:?}, OS code {:?})",
+        error.kind(),
+        error.raw_os_error()
+    )
 }
 
 /// Reject symlinks at every existing ancestor, including paths supplied explicitly.
@@ -628,6 +632,10 @@ impl Store {
                     if m.id != id || receipt.id != id || receipt.digest != digest(&assets) {
                         return Err("invalid recovery package".into());
                     }
+                    // Windows directory renames require closing descendant handles.
+                    // The store lock excludes new leases throughout recovery.
+                    #[cfg(windows)]
+                    drop(_lease);
                     fs::rename(&path, live).map_err(io_error)?;
                 }
                 sync_dir(&self.root)?;
@@ -838,6 +846,10 @@ pub fn update(home: &Path, id: &str) -> Result<Installed, String> {
     let stage = store.stage(&m, &assets, "catalog")?;
     let live = store.root.join(id);
     let old = store.root.join(format!(".old-{id}"));
+    // An exclusive lease proved there are no hosts. Windows needs its descendant
+    // handle closed before directory rename; the store lock excludes new leases.
+    #[cfg(windows)]
+    drop(_lease);
     if let Err(error) = replace(&stage, &live, &old) {
         if stage.try_exists().map_err(io_error)? {
             let _ = delete(&stage);
@@ -845,9 +857,6 @@ pub fn update(home: &Path, id: &str) -> Result<Installed, String> {
         return Err(error);
     }
     sync_dir(&store.root)?;
-    // Publication finished under the store lock; close the old Windows lease before deletion.
-    #[cfg(windows)]
-    drop(_lease);
     delete(&old)?;
     sync_dir(&store.root)?;
     store.installed(id, false)
@@ -866,11 +875,12 @@ pub fn remove(home: &Path, id: &str) -> Result<(), String> {
         return Err("engine package identity changed".into());
     }
     let tombstone = store.root.join(format!(".delete-{}", uuid::Uuid::new_v4()));
-    fs::rename(store.root.join(id), &tombstone).map_err(io_error)?;
-    sync_dir(&store.root)?;
-    // The tombstone is no longer resolvable and the store lock excludes new readers.
+    // Close the exclusive descendant handle before Windows directory rename.
+    // The store lock continues to exclude readers until deletion finishes.
     #[cfg(windows)]
     drop(_lease);
+    fs::rename(store.root.join(id), &tombstone).map_err(io_error)?;
+    sync_dir(&store.root)?;
     delete(&tombstone)?;
     sync_dir(&store.root)
 }

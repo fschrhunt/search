@@ -407,7 +407,9 @@ fn parents(path: &Path, trusted: bool, missing: bool) -> Result<Vec<File>, Strin
         }
         let file = raw(
             &prefix,
-            READ_CONTROL | FILE_READ_ATTRIBUTES,
+            // Metadata-only opens do not participate in Windows sharing checks.
+            // List access makes the deny-write/delete pin effective.
+            READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY,
             OPEN_EXISTING,
             None,
             true,
@@ -534,17 +536,36 @@ pub(crate) fn replace(temp: &Path, path: &Path) -> Result<(), String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => (),
         Err(e) => return Err(e.to_string()),
     }
-    let (source, target) = (wide(temp)?, wide(path)?);
-    // SAFETY: both paths are NUL-terminated and parents remain pinned through publication.
+    let name = wide(path)?;
+    let source = raw(temp, GENERIC_READ | DELETE, OPEN_EXISTING, None, false)?;
+    check(&source, false, Boundary::Private)?;
+    let name_bytes = name.len().saturating_sub(1) * size_of::<u16>();
+    let bytes = size_of::<FILE_RENAME_INFO>() + name_bytes;
+    let bytes = u32::try_from(bytes).map_err(|_| "replacement filename is too long")?;
+    let mut buffer = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: the zeroed buffer is aligned for FILE_RENAME_INFO and has room for its
+    // variable UTF-16 tail including its NUL. The absolute destination and null
+    // RootDirectory are independent of cwd; ancestors stay pinned. No references
+    // alias the tail.
+    unsafe {
+        (*info).Anonymous.Flags =
+            windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_REPLACE_IF_EXISTS
+                | windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMANTICS;
+        (*info).FileNameLength = name_bytes as u32;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            std::ptr::addr_of_mut!((*info).FileName).cast(),
+            name.len(),
+        );
+    }
+    // SAFETY: source owns a DELETE-capable no-reparse handle and the information
+    // buffer stays live. POSIX replacement preserves old handles and the new ACL.
     if unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
+        SetFileInformationByHandle(source.as_raw_handle(), FileRenameInfoEx, info.cast(), bytes)
     } == 0
     {
-        return Err(last_error());
+        return Err(format!("private file replacement failed: {}", last_error()));
     }
     Ok(())
 }
@@ -721,6 +742,11 @@ mod tests {
         drop(next);
         replace(&stage, &path).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        use std::io::{Read, Seek};
+        file.rewind().unwrap();
+        let mut previous = String::new();
+        file.read_to_string(&mut previous).unwrap();
+        assert_eq!(previous, "old");
         private(&path, false, Boundary::Private).unwrap();
     }
 
@@ -785,7 +811,15 @@ mod tests {
         .is_err());
         assert!(!target.join("escape").exists());
         let pins = parents(&target.join("child"), true, false).unwrap();
+        assert!(raw(&target, GENERIC_WRITE, OPEN_EXISTING, None, false).is_err());
+        assert!(std::fs::remove_dir(&target).is_err());
         assert!(std::fs::rename(&target, temp.0.join("moved")).is_err());
+        // Pins must still permit private child creation and no-follow reads.
+        let child = target.join("child");
+        let file = open(&child, true, true, false, Boundary::Private).unwrap();
+        drop(file);
+        drop(read(&child).unwrap());
+        std::fs::remove_file(&child).unwrap();
         drop(pins);
         std::fs::rename(&target, temp.0.join("moved")).unwrap();
         std::fs::remove_dir(&junction).unwrap();

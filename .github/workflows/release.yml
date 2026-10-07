@@ -97,9 +97,15 @@ jobs:
           TAG: ${{ github.ref_name }}
           TRIPLE: ${{ matrix.triple }}
           MACOSX_DEPLOYMENT_TARGET: '11.0'
+          RUSTFLAGS: ${{ matrix.platform == 'windows' && '-C target-feature=+crt-static' || '' }}
         run: |
           SEARCH_BUILD_VERSION="$TAG" SEARCH_BUILD_CHANNEL=release SEARCH_BUILD_COMMIT="$GITHUB_SHA" \
             ./x build --release --target "$TRIPLE" --bin search
+      - name: Verify the Windows release needs no C runtime redistributable
+        if: runner.os == 'Windows'
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: python scripts/check-windows-imports.py "target/$TRIPLE/release/search.exe"
       - name: Package Unix archive
         if: runner.os != 'Windows'
         env:
