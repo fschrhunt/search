@@ -74,13 +74,16 @@ jobs:
           TMP: ${{ env.SEARCH_TEST_TEMP || runner.temp }}
           TEMP: ${{ env.SEARCH_TEST_TEMP || runner.temp }}
       - name: Build the native release profile
-        run: ./x build --release
+        run: ./x build --release --target "$TRIPLE"
         env:
+          TRIPLE: ${{ matrix.triple }}
           MACOSX_DEPLOYMENT_TARGET: '11.0'
           RUSTFLAGS: ${{ contains(matrix.triple, 'windows') && '-C target-feature=+crt-static' || '' }}
       - name: Verify the Windows release needs no C runtime redistributable
         if: runner.os == 'Windows'
-        run: python scripts/check-windows-imports.py target/release/search.exe
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: python scripts/check-windows-imports.py "target/$TRIPLE/release/search.exe"
       - name: Check Windows installer syntax and behavior
         if: runner.os == 'Windows'
         shell: pwsh
