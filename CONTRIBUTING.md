@@ -1,29 +1,36 @@
 # Contributing
 
-search is a self-hosted web search service in Rust. This is how to change it.
+Search is a self-hosted web search service in Rust. This is how to change it.
 
 ## Getting set up
 
 Rust 1.98 is pinned in `rust-toolchain.toml`; `rustup` will install it on first
-build.
+build. Install Python 3 as well: the package tests use it for offline command
+adapter fixtures and the custom engine example. The shipped HTTP engines do
+not need Python at runtime.
 
 ```sh
+./x build     # build the development binary
 ./x check     # what a pull request must pass
 ```
 
 `./x check` runs, in order:
 
 - `./x fmt --check` — `cargo fmt --all --check`
-- `./x lint` — `cargo clippy --locked --all-targets --all-features -- -D warnings`
-- `./x test` — the workspace tests
-- `./x shell` — syntax checks for the entrypoint, installer, and release scripts
+- `./x lint` — `cargo clippy --locked --all-targets --all-features -- -D warnings`,
+  including the all-features build check
+- `cargo check --locked --no-default-features` and
+  `cargo check --locked --no-default-features --features mcp` — minimal and MCP-only builds
+- `./x test` — the package tests
+- `./x shell` — syntax checks for `x`, `install.sh`, and `scripts/*.sh`
 - `./x guard` — `scripts/guard.sh`, the security-surface audit
 
-CI runs the same commands, so your machine and CI never disagree about green.
+CI runs `./x check` too. Tests use local fixtures and mock servers, not live
+engine queries.
 
 `./x` defaults to `check` and does not rewrite source files or lockfiles.
 `./x help` lists commands. Build, fmt, lint, and test forward Cargo arguments;
-for example, `./x build --release` or `./x test -p search guard`.
+for example, `./x build --release` or `./x test guard`.
 `./x fmt` formats files; `./x fmt --check` only checks them. `check`, `shell`,
 and `guard` reject extra arguments.
 
@@ -35,25 +42,22 @@ and `guard` reject extra arguments.
 - **A `CHANGELOG.md` entry** under `Unreleased` for anything user-visible.
 - **Updated docs and comments.** A stale comment is worse than none.
 
-`scripts/guard.sh` pins promises search makes — the network hosts it may reach,
+`scripts/guard.sh` pins promises Search makes — the network hosts it may reach,
 the panic-site policy, the SSRF guard, the auth layer. A change that legitimately
 moves one of those boundaries updates the guard in the same diff, where review
 can see it. Never work around it.
 
 ## Where things go
 
-The file map and the conventions are in `AGENTS.md`. In short: `crates/search`
-is the engine library and names no terminal, listener, or protocol. The `cli`
-and `mcp` packages depend on it, not the reverse. `search::Search` is the
-in-process API used by both adapters.
-`crates/engines` owns maintained package directories and the local catalog/installer;
-the core and CLI depend on its metadata API. Add engines there using the same
-manifest/adapter contract as user packages, never a special core registration.
+The file map and conventions are in [AGENTS.md](AGENTS.md); module contracts and
+layering are in the [architecture guide](docs/contributing/architecture.md).
+Shipped and custom engines use the same version-1 manifest, command protocol,
+and package store. See [engine packages](docs/engines.md) before adding one.
 
 ## Branches, commits and pull requests
 
 - Before the first push, name the branch `<type>/<slug>`, for example
-  `fix/rebinding-guard` or `feat/owned-index`. Never push `main` directly.
+  `fix/rebinding-guard` or `docs/remote-setup`. Never push `main` directly.
 - Conventional commit titles, plain language: `fix(search): close the DNS
   rebinding gap`. The type is `feat`, `fix`, `perf`, `refactor`, `docs`, `test`,
   or `chore`; the scope is `search`, `engines`, `cli`, `mcp`, `infra`, or `docs`.
@@ -69,4 +73,4 @@ See [docs/contributing/releases.md](docs/contributing/releases.md).
 ## Conduct and security
 
 Be straightforward and kind in issues and reviews. Report a vulnerability the way
-`SECURITY.md` describes, not in a public issue.
+[SECURITY.md](SECURITY.md) describes, not in a public issue.

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "json-post",
+  "version": "1.0.0",
+  "description": "Custom authenticated JSON POST search starter",
+  "adapter": {
+    "type": "command",
+    "command": "python3",
+    "args": ["-S", "-B", "engine.py"],
+    "env": ["SEARCH_API_KEY"],
+    "config": {
+      "endpoint": "https://example.com/search",
+      "timeout": 30
+    }
+  },
+  "files": ["engine.py"],
+  "requires": ["python3"]
+}

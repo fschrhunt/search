@@ -15,12 +15,27 @@ version=${SEARCH_VERSION:-}
 
 fail() { echo "search install: $*" >&2; exit 1; }
 
+usage() {
+  cat <<'EOF'
+Install the Search release for this computer into ~/.local/bin.
+Run the installer again to upgrade; installed engines and settings are untouched.
+
+Usage: sh install.sh [--version vX.Y.Z] [--dir DIR]
+  --version TAG  choose a release (default: latest, or SEARCH_VERSION)
+  --dir DIR      choose a folder (default: ~/.local/bin, or SEARCH_INSTALL_DIR)
+  help           show this reference (--help is also accepted)
+
+Download and inspect install.sh before running it. Archives are checked against
+the release checksums; checksums do not independently authenticate the publisher.
+EOF
+}
+
 while [ $# -gt 0 ]; do
   case $1 in
     --version) [ $# -ge 2 ] || fail "--version needs a version, like v0.1.0"; version=$2; shift 2 ;;
     --version=*) version=${1#--version=}; shift ;;
     --dir) [ $# -ge 2 ] || fail "--dir needs a folder"; dir=$2; shift 2 ;;
-    -h|--help) sed -n '2,9p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
+    help|-h|--help) usage; exit 0 ;;
     *) fail "unknown option $1; options: --version vX.Y.Z, --dir DIR" ;;
   esac
 done
@@ -83,7 +98,7 @@ tar -xzf "$work/$archive" -C "$work" search
 if [ ! -f "$work/search" ] || [ -L "$work/search" ]; then
   fail "$archive has no search binary"
 fi
-got=$("$work/search" --version 2>/dev/null || true)
+got=$("$work/search" version 2>/dev/null || true)
 [ "$got" = "$version" ] || fail "$archive says it is \"$got\", not $version"
 
 mkdir -p "$dir"
@@ -97,4 +112,4 @@ case ":$PATH:" in
   *) echo "Add $dir to your PATH, for example in ~/.zshrc or ~/.bashrc:"
      echo "  export PATH=\"$dir:\$PATH\"" ;;
 esac
-echo "Next: search serve (paired HTTPS), or search QUERY (local CLI)"
+echo "Next: search help, or search \"rust async\" (no server required)"

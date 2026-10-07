@@ -1,10 +1,12 @@
 # Releases
 
-A release is a `v*` tag on main. Everything after the tag is automatic.
+A release is a `v*` tag on main. The tag starts the release workflow.
 
 ## Cutting one
 
-From an up-to-date main checkout:
+With Git and the authenticated GitHub CLI (`gh`) installed, and permission to
+push a release branch, open its PR, and push tags, use a clean, up-to-date main
+checkout. Choose an unused version with nonempty `Unreleased` notes:
 
 ```sh
 scripts/release.sh v0.2.0    # opens a PR naming CHANGELOG.md's Unreleased section v0.2.0
@@ -13,14 +15,19 @@ scripts/release.sh v0.2.0    # after merging it: checks CI passed on main, then 
 
 ## What the tag runs
 
-`.github/workflows/release.yml`, in order:
+`.github/workflows/release.yml` runs:
 
 1. **check**: the tag is on main and `CHANGELOG.md` has its section; `./x check`.
 2. **release**: archives for macOS and Linux (arm64 and amd64) with checksums and
    build provenance; the GitHub release, with the changelog section as its notes.
+   Builds target the root package with the default `cli` feature. Root `build.rs`
+   embeds the catalog and release identity; binary upgrades do not replace
+   installed engines, settings, or private trust files.
 3. **formula**: regenerates `search.rb` (`scripts/formula.sh`) for the release and
    pushes it to main.
 4. **install**: a real `install.sh` install of the release on both systems.
+
+Both `formula` and `install` depend on `release` and may run in parallel.
 
 ## Who can write to main
 
@@ -40,7 +47,7 @@ Setting it up, or replacing the key, takes an admin of the repository:
 
 ## Where people get it
 
-- `curl -fsSL .../install.sh | sh`: `install.sh` from main, which downloads the
-  latest release and checks its checksum.
-- `brew install`: from `search.rb` at the top of this repository, which Homebrew
-  reads as a tap.
+- The [official installer](../install.md#the-installer): review `install.sh` from
+  main before running it; it downloads the release and checks its checksum.
+- [Homebrew](../install.md#homebrew): from `search.rb` at the top of this
+  repository, which Homebrew reads as a tap.

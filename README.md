@@ -2,10 +2,10 @@
   <img src="assets/white/lockup.svg#gh-dark-mode-only" alt="Search" height="52">
   <img src="assets/black/lockup.svg#gh-light-mode-only" alt="Search" height="52">
 
-  <h3>Search the web. Build your own index as you go.</h3>
+  <h3>Search the web. Read pages cleanly.</h3>
 
   <p>Self-hosted web search for people and AI agents.<br>
-  Find pages across independent providers, read them cleanly, and keep what you fetch in a private index.</p>
+  Find pages across independent engines and read them as clean text.</p>
 
   <p>
     <a href="docs/install.md">Install</a> ·
@@ -16,44 +16,44 @@
 
 <br>
 
-## Find, read, keep
+## Find and read
 
 - **Find:** run installed engine packages in parallel and merge their results.
   Mwmbl is the single keyless default; a failed engine is reported rather than
   hidden. [Install maintained or custom engines](docs/engines.md) without rebuilding
   Search. Packages live in `~/.search/engines` and use one public adapter contract.
 - **Read:** fetch pages through an SSRF-protected reader that strips page
-  clutter. Ask for passages relevant to a query instead of a whole article.
-- **Keep:** fetched pages join a local SQLite full-text index. Search blends
-  local matches with live results, so useful pages remain searchable when
-  providers are unavailable. Size and age limits keep the index bounded.
+  clutter. Read the full clean page or request passages relevant to a query.
+  A transient in-memory cache reuses recent fetches.
 
-Local search and saving fetched pages can each be switched off. Seeded hosts
-refresh only when configured, and only through the explicit refresh command—
-Search does not crawl the web on its own.
+Only Mwmbl and SearXNG ship with Search. Bring other services—including AI search
+APIs—as [custom HTTP or command engines](docs/engines.md#custom-engines).
 
 ## Start
 
-Build from source with Rust:
+Download the official installer, review it, then run it:
 
 ```sh
-git clone https://github.com/fschrhunt/search
-cd search
-./x build --release
+curl -fsSL https://raw.githubusercontent.com/fschrhunt/search/main/install.sh -o install-search.sh
+less install-search.sh
+sh install-search.sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Search from your terminal—no server required:
 
 ```sh
-./target/release/search "rust async runtime"
-./target/release/search fetch https://www.rust-lang.org -query "async"
-./target/release/search index "async runtime" -json
+search version
+search help
+search "rust async runtime"
+search fetch https://www.rust-lang.org -query "async"
 ```
 
-Or host the HTTPS API and MCP server:
+See [installation](docs/install.md) for Homebrew, source builds, and installer
+options. To host the optional HTTPS API and MCP server:
 
 ```sh
-./target/release/search serve
+search serve
 ```
 
 `search serve` creates a persistent TLS identity and prints its fingerprint and
@@ -65,85 +65,105 @@ that host. Remote failures are errors with no local fallback. See
 
 ## Use it with an agent
 
-With no arguments, `search` serves MCP over stdio. Add it to your MCP client:
+With no arguments, `search` serves MCP over stdio. This common `mcpServers`
+template is for clients that accept that schema; use your client's documented
+configuration file. The client process must be able to find `search` on its
+`PATH`, or use the binary's absolute path:
 
 ```json
 {
-  "mcp": {
-    "servers": {
-      "search": { "command": ["search"] }
-    }
+  "mcpServers": {
+    "search": { "command": "search", "args": [] }
   }
 }
 ```
 
 The server exposes two tools: `web_search` for discovery and `web_fetch` for
-clean, query-focused reading. For a shared host, select a paired remote; the agent configuration stays the same.
+clean page reading, with optional query-focused passages. For a shared host,
+select a paired remote; the agent configuration stays the same.
 
 ## One engine, more surfaces
 
 | Surface | Use it for |
 | --- | --- |
-| CLI | One-shot search, fetch, and local-index queries |
-| Rust | Use `search::Search` as an in-process engine |
-| HTTP | Integrate with scripts and services; includes status, search, index, and fetch endpoints |
+| CLI | One-shot search and fetch |
+| Rust | Use `search::core::Search` as an in-process engine |
+| HTTP | Integrate with scripts and services; includes status, search, and fetch endpoints |
 | MCP | Give an agent the `web_search` and `web_fetch` tools |
 
-The engine API lives in the `search` workspace crate. The `cli` and `mcp`
-workspace packages are separate adapters; MCP dependencies are not part of the
-engine crate. In Rust, start with `use search::{Config, Search};` and open a
-configured engine with `Search::open(config)`.
+Search is one Cargo package. Use `search::core::{Search, Config, Query, Answer, Page, Link}` in-process, `search::engines` for runtime and package APIs,
+`search::client::Client` for local/remote routing, and `search::mcp::Server` for MCP.
+Disable default features for a library without CLI or protocol dependencies:
+
+```toml
+[dependencies]
+search = { path = "../search", default-features = false }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+Use a local checkout at `../search`. This example searches with the configured
+engines and prints result links:
+
+```rust
+use search::core::{Config, Query, Search};
+
+/// Search the default engines and print their result links.
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let search = Search::open(Config::default())?;
+    let answer = search
+        .search(Query {
+            text: "rust async runtime".into(),
+            limit: 5,
+            ..Query::default()
+        })
+        .await;
+    for link in answer.results {
+        println!("{}: {}", link.title, link.url);
+    }
+    Ok(())
+}
+```
+
+The default `cli` feature includes MCP and hosting/authentication dependencies;
+`default-features = false, features = ["mcp"]` enables MCP only. See the
+[architecture guide](docs/contributing/architecture.md) for module boundaries
+and the tradeoff in enforcing them.
 
 ## Make it yours
 
-Settings live in `~/.search/settings.json` or the file named by `CONFIG`.
-`SEARCH_HOME` selects the Search home, including packages, data, and private trust
-storage; it defaults to `~/.search`. Defaults are useful; turn features off or tune
-them as needed. No packages are implicitly loaded from the working directory.
+Settings live in `SEARCH_HOME/settings.json` (normally `~/.search/settings.json`)
+or the file selected by `-config PATH` or `CONFIG`.
+`SEARCH_HOME` selects the package, settings, and private trust root, defaulting
+to `~/.search`. Packages are never implicitly loaded from the working directory.
 
 ```json
 {
-  "fetch": { "max_stored_chars": 40000 },
-  "index": {
-    "include_in_search": true,
-    "save_fetched_pages": true,
-    "max_size_mb": 512,
-    "retention_days": 180,
-    "refresh_hosts": [],
-    "refresh_interval_days": 7
-  }
+  "engines": { "use": ["mwmbl"] },
+  "fetch": { "cache_ttl": 600000 }
 }
 ```
 
-Set `index.include_in_search` or `index.save_fetched_pages` to `false` to
-disable that behavior. Set `max_size_mb` or `retention_days` to `0` for no limit.
-See the full [configuration reference](docs/configuration.md).
+Install and enable optional engines before selecting them; credentials come from
+host environment variables. See [engine packages](docs/engines.md) and
+[configuration](docs/configuration.md).
 
-Set `index.enabled` to `false` for no local database access at all. This leaves
-existing indexed pages untouched; paired HTTPS credentials are stored separately.
-Set `engines.enabled` to `false` to run without live web engines, or tune
-`remote.timeout` for slower paired hosts.
-
-To stop blending local pages into web results and stop saving newly fetched
-pages, set both options to `false`:
-
-```json
-{
-  "index": { "include_in_search": false, "save_fetched_pages": false }
-}
-```
+Search has no persistent corpus. Upgrading from the former index-based setup?
+See [migration notes](docs/configuration.md#migration) for removed settings and
+commands; existing files and data are left untouched.
 
 ## API
 
-Every execution request uses a paired device credential over pinned HTTPS.
-Pairing alone is public and requires an expiring, one-use code.
+All API and MCP routes, including `/healthz`, require a paired device bearer
+credential over HTTPS. Search clients pin the host certificate. Only `/pair`
+is public; it requires an expiring, one-use code.
 
 ```text
 GET  /healthz                 liveness
-GET  /v1/status               providers, corpus size, version
-GET  /v1/search?q=...         search providers and local index
-GET  /v1/index?q=...          search only the local index
-POST /v1/fetch {"urls":[...]} fetch pages and optionally index them
+GET  /v1/status               engines, version
+GET  /v1/search?q=...         search live web engines
+POST /v1/fetch {"urls":[...]} fetch clean pages
+POST /v1/execute              CLI/stdio operations
 POST /mcp                     MCP over streamable HTTP
 ```
 

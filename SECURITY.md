@@ -11,22 +11,23 @@ helps; a working exploit is not required.
 
 ## What is a vulnerability here
 
-search runs on a private machine and is reached over a private network, but it
+Search runs on a private machine and is reached over a private network, but it
 treats every URL and every page as hostile regardless. These are the properties
 worth attacking:
+
+The fetch guard lives in `src/core/fetch/guard.rs`, package trust in
+`src/engines/`, and hosting identity/authentication in `src/cli/auth.rs`.
+Root `src/lib.rs` applies the production panic-site deny policy across modules.
 
 - **The fetcher reaches only public addresses.** Loopback, RFC1918, link-local
   (including `169.254.169.254`), CGNAT, multicast, unique-local, and every IPv6
   form that embeds such an IPv4 must be refused, on the URL and on every
   redirect hop. A way to reach one is a vulnerability.
-- **Every execution request is authenticated over HTTPS.** An API or MCP path
-  that executes without a current paired-device credential is a vulnerability.
+- **Every API and MCP route is authenticated over HTTPS, including health.**
+  Access without a current paired-device credential is a vulnerability.
   The public pairing endpoint requires a bounded, expiring one-use code.
 - **Untrusted HTML cannot crash the service or exhaust it.** A panic, an
   unbounded allocation, or an infinite loop driven by a fetched page is a
-  vulnerability.
-- **The full-text index cannot be driven by query text.** A query that reaches
-  SQLite as anything other than a quoted-term MATCH expression is a
   vulnerability.
 - **Engine packages are explicitly trusted locally.** A remote execution request
   must not install programs, change manifests, or configure the host. Package
@@ -36,11 +37,11 @@ worth attacking:
 
 ## What is not a vulnerability
 
-- Hosting on a private network. search is meant to sit behind a
+- Hosting on a private network. Search is meant to sit behind a
   tailnet; the listener itself uses paired HTTPS.
-- A provider returning wrong or stale results. Discovery borrows other indexes;
+- An engine returning wrong or stale results. Discovery borrows other indexes;
   their accuracy is their own.
-- The absence of a rate limit. search is a personal service behind a private
+- The absence of a global execution rate limit. Search is a personal service behind a private
   network and paired-device trust.
 - `fetch.allow_private_networks: true` letting the fetcher reach private addresses. That setting
   is documented as disabling the guard, for tests and air-gapped mirrors only.

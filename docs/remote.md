@@ -1,10 +1,12 @@
 # Remote hosting
 
-Local CLI commands and stdio MCP work without authentication. To share a corpus
-and provider configuration, host Search on one machine and pair each client.
-There is one device role: execution access to search, fetch, index and refresh.
+Local CLI commands and stdio MCP work without authentication. To share engine
+configuration and fetch policy, optionally host Search on one machine and pair
+each client. There is one device role: execution access to search and fetch.
 Device administration runs locally on the hosting machine.
 
+Install Search on both machines. The example assumes `search.example.net`
+resolves to the host on a private network and clients can reach port 8642.
 On the host:
 
 ```sh
@@ -27,8 +29,6 @@ search remote pair home https://search.example.net:8642 ./host.pem HOST_SHA256
 search remote use home
 search "rust async"
 search fetch https://www.rust-lang.org
-search index "async"
-search refresh
 ```
 
 The fingerprint argument is the exact lowercase SHA-256 hex value printed by
@@ -38,7 +38,7 @@ validity and signatures using Rustls WebPKI. There is no unverified discovery
 probe. Copying a public certificate once is the explicit trust bootstrap.
 Codes expire after 15 minutes, allow at most 20 attempts, and can enroll one
 device. On the host, run `search pair-code` to issue another code while the
-server keeps running; use the same `-config PATH` or `DIR` as the serving process.
+server keeps running; use the same `SEARCH_HOME` as the serving process.
 The command prints only the new one-use code and invalidates the previous code.
 The identity and existing device credentials persist.
 
@@ -65,10 +65,9 @@ enrolled devices. Management commands accept `-config PATH` for local settings.
 Agents still spawn `search` over stdio; the two tools and their output shapes
 stay the same. A process reads the selected target when it starts, so restart
 an existing stdio process after switching profiles. Remote network, trust,
-revocation and response errors are explicit; they never open the local corpus
-as a fallback. `search serve` always hosts local data even if a remote is selected.
-Configuration, credentials, fetch policy, index writes and refresh hosts resolve
-on the host. CLI fetch passage formatting remains on the client.
+revocation and response errors are explicit; they never execute locally
+as a fallback. `search serve` always runs its local engine even if a remote is selected.
+Engine configuration, credentials, and fetch policy resolve on the host. CLI fetch passage formatting remains on the client.
 
 Private files under `SEARCH_HOME/trust` use directory mode 0700 and file mode 0600,
 and must belong to the user running Search.
@@ -78,11 +77,14 @@ current one-use code hash and admission bounds. Settings can be shared, these fi
 cannot. Do not point multiple machines at the same trust storage. Storage
 currently requires Unix permission semantics; other platforms fail closed.
 
-HTTPS execution and MCP endpoints require a device bearer secret; `/pair` is the
-only public route. Credential-bearing clients reject redirects and proxies,
+All API and MCP endpoints, including `/healthz`, require a device bearer secret;
+`/pair` is the only public route. Credential-bearing clients reject redirects and proxies,
 allow only HTTPS origins, and use connection and overall deadlines (10 and 120
-seconds). Answers are capped at 8 MiB. Remote operation bounds match the HTTP/MCP
-contract: queries at most 512 bytes, limits at most 50, at most 10 URLs per fetch.
+seconds by default). Remote answers are capped at 64 MiB by default; configure
+`remote.timeout` and `remote.max_response_bytes` on the client to change these
+bounds. See [configuration](configuration.md). Remote operation bounds match
+the HTTP/MCP contract: queries at most 512 bytes, limits at most 50, at most 10
+URLs per fetch.
 The service is for mutually trusted devices on a private network, with no
 mDNS discovery, admin roles, OAuth or tenant isolation. Identity name changes
 require deliberate identity replacement and re-pairing.

@@ -1,109 +1,94 @@
 # Configuration
 
-Settings are read from `~/.search/settings.json`, or the file named by
-`CONFIG`. Missing explicitly selected files are errors; only an absent default
-file uses built-in settings. The file is ordinary JSON; add explanations in the
-optional `notes` object. Unknown settings fail at startup rather than being ignored.
+Settings are read from `SEARCH_HOME/settings.json` (normally
+`~/.search/settings.json`), or the file selected by `-config PATH` or `CONFIG`.
+The command-line path takes precedence over `CONFIG`.
+Missing explicitly selected files are errors; an absent default file uses built-in
+settings. The optional `notes` object holds explanations. Unknown settings are
+rejected rather than ignored.
 
-## Environment overrides
-
-- `SEARCH_HOME` selects the application home (default `~/.search`), not the working directory.
-- `CONFIG` selects the settings file.
-- `ADDRESS` overrides `address`.
-- `DIR` overrides `dir`.
-
-Installed packages live under `SEARCH_HOME/engines`; pairing credentials live in
-owner-only files under `SEARCH_HOME/trust`, separate from
-settings. Local CLI and stdio MCP need no authentication. `search serve` always
-uses paired HTTPS, on loopback and remote interfaces alike. See [remote](remote.md).
+`SEARCH_HOME` selects the application home (default `~/.search`), independently
+of the working directory and settings file. It must be absolute; a leading `~/`
+is expanded. Packages live under `SEARCH_HOME/engines`, and owner-only pairing
+credentials under `SEARCH_HOME/trust`. `ADDRESS` overrides the listener address.
+Local CLI and stdio MCP need no pairing; hosting uses [paired HTTPS](remote.md).
 
 ## Settings
 
 ```json
 {
-  "notes": {
-    "timeouts": "Timeout and cache_ttl numbers are milliseconds.",
-    "index.enabled": "False disables all corpus access; it does not delete existing pages."
-  },
+  "notes": { "timeouts": "Timeout and cache_ttl values are milliseconds." },
   "address": "127.0.0.1:8642",
-  "dir": "/home/you/.search/data",
   "search": {
     "max_results": 10,
     "engine_timeout": 5000,
-    "timeout": 8000,
-    "local_weight": 1.5
+    "timeout": 8000
   },
   "fetch": {
     "timeout": 15000,
     "max_response_bytes": 4194304,
     "max_redirects": 5,
     "cache_ttl": 600000,
+    "cache_bytes": 33554432,
     "allow_private_networks": false,
-    "max_concurrency": 8,
-    "max_stored_chars": 40000
-  },
-  "index": {
-    "enabled": true,
-    "save_fetched_pages": true,
-    "include_in_search": true,
-    "max_size_mb": 512,
-    "retention_days": 180,
-    "refresh_hosts": [],
-    "refresh_interval_days": 7
+    "max_concurrency": 8
   },
   "engines": {
     "enabled": true,
     "use": ["mwmbl"],
     "config": {}
   },
-  "remote": {
-    "timeout": 120000
-  }
+  "remote": { "timeout": 120000, "max_response_bytes": 67108864 }
 }
 ```
 
-Timeouts and cache TTL are milliseconds; fields ending in `_days` use days.
-Omit a setting to use its built-in default. Explicit zero values are never
-replaced with defaults: `cache_ttl: 0` disables the fetch cache and
-`max_redirects: 0` follows no redirects. Deadlines, result and body limits, and
-concurrency must be positive. Zero size/retention means no pruning; a zero
-refresh interval makes every saved seeded page eligible for explicit refresh.
+Omitted fields use defaults. Deadlines, result/body limits, and concurrency must
+be positive. `cache_ttl: 0` or `cache_bytes: 0` disables the transient in-memory
+fetch cache; `max_redirects: 0` follows no redirects.
 
-- `address` is the listener address. `dir` holds the SQLite index.
-- `search.engine_timeout` limits one engine; `search.timeout` limits the
-  whole query. `max_results` caps results and `local_weight` ranks local hits.
-- `fetch.timeout` and `max_response_bytes` bound page retrieval. Set
-  `allow_private_networks` only for tests or air-gapped mirrors; it disables the
-  SSRF guard.
-- `index.enabled: false` disables all database access, including explicit index
-  commands, without creating, opening, pruning, or deleting the corpus. HTTPS
-  device credentials remain separate and are still stored when hosting/pairing.
-- `index.save_fetched_pages` controls local storage, and
-  `index.include_in_search` controls blending local hits into web results.
-  Disabling either does not delete existing pages; explicit index search remains
-  available.
-- `engines.enabled: false` disables live engines, leaving local-index search
-  available. `engines.use` selects installed package IDs; empty means none, not
-  all. The default selection is just `mwmbl`; other packages run only after you
-  explicitly install and enable them. Selected engines run concurrently and their
-  results are merged, but no multi-engine setup is required. `engines.config` holds
-  per-engine adapter overrides, separate from package files; see [engine packages](engines.md)
-  for installation, configuration, and the executable trust boundary.
-- The default `search.engine_timeout` is 5000 ms per engine; `search.timeout`
-  caps the whole query at 8000 ms. This leaves slower opt-in APIs more room while
-  keeping the total wait bounded.
-- `remote.timeout` sets the overall deadline for calls to the selected paired
-  host. The default is 120000 milliseconds; the connection timeout stays fixed
-  at 10000 milliseconds.
+- `address` selects the listener. `user_agent` overrides page-fetch and HTTP-engine identity;
+  by default it identifies Search and its version.
+- `search.engine_timeout` bounds one engine; `search.timeout` bounds the whole
+  query (defaults: 5000 ms and 8000 ms). `max_results` caps returned results.
+- `remote.max_response_bytes` caps a paired host's JSON response (default 64 MiB).
+  Raise it for larger full-page batches; exceeding it returns an error, never a
+  local fallback. `remote.timeout` bounds the entire request.
+- `fetch.timeout` and `max_response_bytes` bound page retrieval. Only tests and
+  air-gapped mirrors should set `allow_private_networks: true`, which disables
+  the page-fetch SSRF guard.
+- `fetch.cache_bytes` bounds approximate cached string payloads (text, URLs,
+  metadata, and keys) plus entry structs, defaulting to 32 MiB. Hash-table slack
+  and allocator overhead are excluded. The cache clears all entries when an
+  insertion would exceed this budget or 2048 entries. Pages larger than the
+  budget are returned without being cached; cached pages expire after `cache_ttl`.
+- `engines.use` selects installed package IDs; the default is just `mwmbl`.
+  An empty list or `engines.enabled: false` returns no discovery results.
+  `engines.config` holds per-engine adapter overrides separately from package
+  files. See [engine packages](engines.md) for setup and trust.
 
-`dir` expands a leading `~/` using `HOME`. The old `directory`,
-`token`, and `token_env` fields are rejected, with no compatibility aliases.
+The remote connection timeout is 10000 ms; the overall deadline and response
+cap are controlled by the `remote` settings above.
 
-`CONFIG` changes only the settings file, not the package or trust home. `DIR`
-changes only corpus storage, not private credentials. `SEARCH_HOME` must name an
-absolute path (a leading `~/` is expanded); no current-directory fallback exists.
+## Migration
 
-The settings schema is a clean break: old XDG paths and inline `engines.custom`/
-`engines.only` settings are not read or migrated. Each installed engine owns its
-manifest at `SEARCH_HOME/engines/NAME/engine.json`; user overrides remain in
-`settings.json`, so updating an engine does not overwrite them.
+Search now provides live web search and clean fetch, with no persistent local
+corpus, index queries, or refresh command. Existing files and data are untouched;
+there is no automatic migration or deletion.
+
+Remove `dir`, `search.local_weight`, `fetch.max_stored_chars`, and the entire
+`index` object from settings: these fields are rejected. `DIR` and `-dir` are
+removed corpus overrides. Use `SEARCH_HOME` for packages, settings, and trust.
+
+Request selection and result attribution use `engines`; replace `providers`
+and the CLI `-providers` flag with `engines` and `-engines`. The package manifest
+field `adapter` remains transport configuration, not an engine selection field.
+
+Old XDG paths and inline `engines.custom`/`engines.only` settings are not migrated.
+The old `directory`, `token`, and `token_env` fields are also rejected. User
+adapter overrides stay in settings, so package updates do not overwrite them.
+
+Only Mwmbl and SearXNG remain in the shipped catalog. Already-installed engines
+and settings are preserved; maintain other packages as custom engines rather
+than expecting catalog updates. Custom engines use the same version-1 manifest,
+command protocol, and package store; see
+[package compatibility](engines.md#compatibility-across-search-updates).
