@@ -163,6 +163,13 @@ fn private(path: &Path, directory: bool) -> Result<(), String> {
     crate::private_fs::private(path, directory, crate::private_fs::Boundary::Private)
 }
 
+/// Prepare command scratch space using the store's ownership and symlink checks.
+pub(super) fn command_temp_dir(path: &Path) -> Result<(), String> {
+    safe_path(path)?;
+    trusted_ancestors(path)?;
+    mkdir(path)
+}
+
 /// Create a private directory without changing permissions of existing objects.
 fn mkdir(path: &Path) -> Result<(), String> {
     safe_path(path)?;

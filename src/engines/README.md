@@ -5,6 +5,11 @@
 embedding, installation, and leases. `mwmbl/` and `searxng/` contain only shipped
 package manifests, using the same adapters as custom engines.
 
+Executable adapters set `TMPDIR`, `TMP`, and `TEMP` to the private OS-temp
+`search/` directory, or an absolute `temp_dir` configured for that adapter.
+Directory creation uses the store's ownership and symlink checks. Scratch files
+are not automatically removed; commands remain trusted, unsandboxed host code.
+
 `search::engines` unifies runtime engines, adapters and the pool with engine
 manifests, the offline maintained catalog, and the local installation store.
 This module contains Rust implementation and shipped declarative assets. For
