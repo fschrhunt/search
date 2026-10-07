@@ -289,7 +289,10 @@ mod tests {
                 executables: vec![],
                 requires: vec![],
             },
-            path: std::env::temp_dir().join("search-package-fixture"),
+            path: std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join("search-package-fixture"),
             lease: None,
             source: "local".into(),
             digest: String::new(),
@@ -303,8 +306,10 @@ mod tests {
             "config":{"missing-package":{"url":"invalid-secret-url"}}
         }}))
         .unwrap();
-        config.home =
-            std::env::temp_dir().join(format!("search-validation-{}", uuid::Uuid::new_v4()));
+        config.home = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-validation-{}", uuid::Uuid::new_v4()));
         config.validate().unwrap();
         let mut disabled = config.clone();
         disabled.engines.enabled = false;

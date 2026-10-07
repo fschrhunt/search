@@ -110,6 +110,13 @@ grep -q 'mode(0o600)' "$trust" || bad "trust files are not owner-only"
 grep -q 'builder.mode(0o700)' "$trust" || bad "trust dir is not owner-only"
 grep -q 'lock_exclusive' "$trust" || bad "trust writers are not serialized"
 
+# Windows needs equivalent guarantees, not an unconditional non-Unix bypass.
+windows=src/private_fs.rs
+[ -f "$windows" ] || bad "Windows private storage implementation is missing"
+for primitive in SE_DACL_PROTECTED FILE_FLAG_OPEN_REPARSE_POINT FILE_ATTRIBUTE_REPARSE_POINT GetSecurityInfo; do
+    grep -q "$primitive" "$windows" || bad "Windows private storage lacks $primitive"
+done
+
 grep -q 'update(&self.path.join("pairing.json")' "$trust" || bad "pair admissions do not lock persisted state"
 grep -q 'update(&path.join("pairing.json")' "$trust" || bad "code renewal does not share the admission lock"
 grep -q 'hash: hash(&code)' "$trust" || bad "pairing code is not stored as a hash"

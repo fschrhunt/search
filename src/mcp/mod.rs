@@ -328,7 +328,10 @@ mod tests {
         let mut config: crate::core::Config = serde_json::from_value(serde_json::json!({
             "engines": {"use": []}, "fetch": {"allow_private_networks": true}
         }))?;
-        config.home = std::env::temp_dir().join("search-full-fetch");
+        config.home = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join("search-full-fetch");
         let server = Server::new(Arc::new(Search::open(config)?));
         let answer = server
             .web_fetch(Parameters(FetchArgs {
@@ -384,7 +387,10 @@ mod tests {
     #[tokio::test]
     async fn web_search_accepts_custom_engine_selection() -> Result<(), Box<dyn std::error::Error>>
     {
-        let root = std::env::temp_dir().join(format!("search-mcp-engine-{}", uuid_for_test()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-mcp-engine-{}", uuid_for_test()));
         let source = root.join("source");
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
@@ -399,7 +405,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1, "id": "custom", "version": "1.0.0", "description": "MCP fixture",
                 "adapter": {
-                    "type": "command", "command": "python3", "args": ["-c",
+                    "type": "command", "command": if cfg!(windows) { "python.exe" } else { "python3" }, "args": ["-c",
                         "import json,sys; r=json.load(sys.stdin); json.dump({'results':[{'title':r['query'],'url':'https://example.com/'}]},sys.stdout)"]
                 }
             }))?,

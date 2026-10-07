@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add native x86_64/ARM64 CI and release builds for Linux, macOS, and Windows;
+  publish Windows ZIPs and a checksummed PowerShell installer, and test installers
+  on their native systems. Use runner-local temporary paths for security tests.
 - Route executable-engine temporary files through a private OS-temp `search/`
   directory via `TMPDIR`, `TMP`, and `TEMP`. Configure `temp_dir` to override
   the location; unsafe directories fail closed. Files are not automatically

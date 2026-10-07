@@ -12,7 +12,7 @@ credential values, or package leases.
 | `mod.rs` | Public configuration API |
 
 Loading uses an explicit path, then `CONFIG`, then
-`SEARCH_HOME/settings.json` (normally `~/.search/settings.json`). A missing implicit
+`SEARCH_HOME/settings.json` (normally `~/.search/settings.json`; Windows uses `%USERPROFILE%/.search/settings.json`). A missing implicit
 default uses built-in settings; a missing explicit file is an error. Environment
 overrides apply last. Unknown fields and unusable bounds fail visibly; explicit
 zero values are not silently replaced with defaults.

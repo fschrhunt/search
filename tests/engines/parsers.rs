@@ -5,11 +5,15 @@ use std::{path::Path, process::Command};
 #[test]
 fn custom_json_post_example_obeys_the_command_contract() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/engines/custom.py");
-    let output = Command::new("python3")
-        .args(["-S", "-B"])
-        .arg(script)
-        .output()
-        .unwrap();
+    let output = Command::new(if cfg!(windows) {
+        "python.exe"
+    } else {
+        "python3"
+    })
+    .args(["-S", "-B"])
+    .arg(script)
+    .output()
+    .unwrap();
     assert!(
         output.status.success(),
         "{}",

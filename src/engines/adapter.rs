@@ -190,7 +190,15 @@ async fn command(
         .args(&settings.args)
         .current_dir(&settings.cwd)
         .env_clear();
-    for name in ["PATH", "HOME", "LANG", "SystemRoot", "SYSTEMROOT"] {
+    for name in [
+        "PATH",
+        "HOME",
+        "USERPROFILE",
+        "PATHEXT",
+        "LANG",
+        "SystemRoot",
+        "SYSTEMROOT",
+    ] {
         if let Some(value) = std::env::var_os(name) {
             process.env(name, value);
         }
@@ -370,12 +378,17 @@ mod tests {
     /// Python is only an offline executable fixture, never a production dependency.
     fn executable(script: &str, cap: u64) -> Command {
         Command {
-            command: "python3".into(),
+            command: if cfg!(windows) {
+                "python.exe"
+            } else {
+                "python3"
+            }
+            .into(),
             config: Default::default(),
             env: Vec::new(),
-            cwd: std::env::temp_dir(),
+            cwd: std::env::temp_dir().canonicalize().unwrap(),
             temp_dir: std::env::temp_dir().canonicalize().unwrap().join("search"),
-            args: vec!["-c".into(), script.into()],
+            args: vec!["-c".into(), script.trim_start().into()],
             max_response_bytes: cap,
         }
     }
@@ -417,7 +430,10 @@ print(json.dumps({'results':[{'title':'First','url':'https://example.com/a','eng
 
     #[tokio::test]
     async fn commands_receive_only_declared_credentials_package_cwd_and_json_config() {
-        let root = std::env::temp_dir().join(format!("search-command-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-command-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("asset.txt"), "package data").unwrap();
         let declared = format!("SEARCH_DECLARED_{}", uuid::Uuid::new_v4().simple());
@@ -793,7 +809,10 @@ print(json.dumps({'results':[{'title':str(i),'url':'https://example.com/'+str(i)
     #[tokio::test]
     async fn timeout_and_cancellation_kill_the_direct_child() {
         for timeout in [true, false] {
-            let path = std::env::temp_dir().join(format!("search-child-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("search-child-{}", uuid::Uuid::new_v4()));
             let mut settings = executable(
                 "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(30)",
                 4096,

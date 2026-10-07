@@ -26,6 +26,11 @@ live under `tests/{cli,engines}`; the custom starter remains at
 
 ## Features and dependency direction
 
+Windows storage primitives live in the private, Windows-only `src/private_fs.rs`
+module. Engine packages, settings, and paired credentials share its ACL and
+no-reparse checks; it is not a new public service or protocol boundary. Unix
+paths retain their owner/permission and no-follow rules.
+
 | Cargo features | Build |
 | --- | --- |
 | Default (`cli`) | Library and CLI binary; `cli` includes `mcp` and optional hosting/authentication dependencies |

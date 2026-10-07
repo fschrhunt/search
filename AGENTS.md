@@ -33,6 +33,7 @@ Cargo.toml     one package; default feature cli includes mcp
 build.rs       embeds the engine catalog and release identity
 src/lib.rs     public core, engines, client, mcp and cli modules; production panic deny
 src/main.rs    CLI binary entry point (requires cli)
+src/private_fs.rs  Windows owner-only ACLs, no-reparse handles, and private storage creation
 src/core/      protocol-free engine (`search::core::Search`)
   config/      inert settings, defaults, loading and validation; Adapter/Http/Command
   fetch/       guarded requests, redirects, body caps; Page is the clean result
@@ -56,7 +57,8 @@ src/cli/       CLI and paired HTTPS host
 tests/        integration tests and fixtures under cli/ and engines/
 docs/examples/json-post/  custom executable starter, outside the catalog
 scripts/guard.sh  security-surface audit: hosts, panic sites, SSRF and auth
-scripts/release.sh · scripts/formula.sh · install.sh  release tooling
+scripts/release.sh · scripts/formula.sh · install.sh · install.ps1  release tooling
+scripts/test-install.ps1  offline Windows installer contract
 docs/          user pages and docs/contributing/ for contributors
 x              repository entry point
 ```

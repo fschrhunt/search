@@ -11,7 +11,10 @@ use std::{
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("search-engines-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-engines-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&path).unwrap();
         #[cfg(unix)]
         {
@@ -30,7 +33,7 @@ impl Temp {
         fs::write(path.join("scripts/run.py"), "print('not executed')").unwrap();
         fs::write(path.join("engine.json"), serde_json::to_vec(&serde_json::json!({
             "schema_version": 1, "id": "fixture", "version": "1", "description": "local fixture",
-            "adapter": {"type": "command", "command": "python3", "args": ["scripts/run.py"]},
+            "adapter": {"type": "command", "command": if cfg!(windows) { "python.exe" } else { "python3" }, "args": ["scripts/run.py"]},
             "files": ["scripts/run.py"]
         })).unwrap()).unwrap();
         path
@@ -442,22 +445,46 @@ fn custom_post_starter_installs_without_execution_and_retains_credentials_metada
     assert!(install_catalog(&temp.home(), "json-post").is_err());
 }
 
-/// A shared lease held by a separate process must prevent nonblocking mutation too.
-#[cfg(unix)]
+/// Child fixture keeps a real runtime lease until its parent's stdin signal.
+#[test]
+fn lease_in_child() {
+    if let Some(home) = std::env::var_os("SEARCH_ENGINES_LEASE_HOME") {
+        use std::io::{BufRead, Write};
+        let _package = resolve(Path::new(&home), "mwmbl").unwrap();
+        println!("ready");
+        std::io::stdout().flush().unwrap();
+        let mut signal = String::new();
+        std::io::stdin().lock().read_line(&mut signal).unwrap();
+    }
+}
+
+/// The same native shared lease must exclude mutation across processes on every supported OS.
 #[test]
 fn another_process_holding_a_lease_blocks_update_and_remove() {
     use std::io::{BufRead, BufReader, Write};
     let temp = Temp::new();
     let home = temp.home();
-    let p = install_catalog(&home, "mwmbl").unwrap();
-    let mut child = Command::new("python3")
-        .args(["-S", "-B", "-c", "import fcntl,sys,select; f=open(sys.argv[1],'rb'); fcntl.flock(f,fcntl.LOCK_SH); print('ready',flush=True); select.select([sys.stdin],[],[],10)"])
-        .arg(p.path.join(".lease")).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
-    let mut ready = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut ready)
+    install_catalog(&home, "mwmbl").unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "lease_in_child", "--nocapture"])
+        .env("SEARCH_ENGINES_LEASE_HOME", &home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
         .unwrap();
-    assert_eq!(ready, "ready\n");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut ready = String::new();
+    loop {
+        ready.clear();
+        assert_ne!(
+            stdout.read_line(&mut ready).unwrap(),
+            0,
+            "lease child exited before readiness"
+        );
+        if ready.split_whitespace().last() == Some("ready") {
+            break;
+        }
+    }
     assert!(update(&home, "mwmbl")
         .unwrap_err()
         .contains("stop running Search hosts"));
@@ -468,6 +495,33 @@ fn another_process_holding_a_lease_blocks_update_and_remove() {
     assert!(child.wait().unwrap().success());
     update(&home, "mwmbl").unwrap();
     remove(&home, "mwmbl").unwrap();
+}
+
+/// Windows package executables retain native PE execution without a shebang interpreter.
+#[cfg(windows)]
+#[test]
+fn declared_windows_native_executable_is_runnable() {
+    let temp = Temp::new();
+    let source = temp.local();
+    let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+    fs::copy(system.join("where.exe"), source.join("native.exe")).unwrap();
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(source.join("engine.json")).unwrap()).unwrap();
+    manifest["files"] = serde_json::json!(["native.exe", "scripts/run.py"]);
+    manifest["executables"] = serde_json::json!(["native.exe"]);
+    manifest["adapter"] =
+        serde_json::json!({"type":"command", "command":"./native.exe", "args":["where.exe"]});
+    fs::write(
+        source.join("engine.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let package = install_local(&temp.home(), &source).unwrap();
+    let result = Command::new(package.path.join("native.exe"))
+        .arg("where.exe")
+        .output()
+        .unwrap();
+    assert!(result.status.success());
 }
 
 /// Inspecting orphan stages must not delete their files; explicit mutation performs cleanup.

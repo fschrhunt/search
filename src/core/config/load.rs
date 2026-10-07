@@ -86,14 +86,26 @@ fn expand_home(path: &std::path::Path, home: Option<PathBuf>) -> Result<PathBuf,
     match path.strip_prefix("~") {
         Ok(rest) => home
             .map(|home| home.join(rest))
-            .ok_or_else(|| ConfigError::new("path uses ~ but HOME is not set")),
+            .ok_or_else(|| ConfigError::new("path uses ~ but the user home is not set")),
         Err(_) => Ok(path.to_path_buf()),
     }
 }
 
 /// Resolve Search's root without consulting the working directory or settings path.
 pub fn home() -> Result<PathBuf, ConfigError> {
-    resolve_home(std::env::var_os("SEARCH_HOME"), std::env::var_os("HOME"))
+    resolve_home(std::env::var_os("SEARCH_HOME"), user_home())
+}
+
+/// Windows uses its native user profile even when Git Bash supplies a Unix-style HOME.
+fn user_home() -> Option<std::ffi::OsString> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").filter(|value| !value.is_empty())
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME")
+    }
 }
 
 /// The implicit settings file belongs to Search home; CONFIG is handled by load.
@@ -113,14 +125,14 @@ fn resolve_home(
         Some(value) => expand_home(&PathBuf::from(value), user_home.map(PathBuf::from))?,
         None => {
             PathBuf::from(user_home.filter(|value| !value.is_empty()).ok_or_else(|| {
-                ConfigError::new("set SEARCH_HOME to an absolute path or set HOME")
+                ConfigError::new("set SEARCH_HOME to an absolute path or set the user home (HOME on Unix, USERPROFILE on Windows)")
             })?)
             .join(".search")
         }
     };
     if !path.is_absolute() {
         return Err(ConfigError::new(
-            "SEARCH_HOME/HOME must resolve to an absolute path",
+            "SEARCH_HOME/user home must resolve to an absolute path",
         ));
     }
     Ok(path)
@@ -161,7 +173,7 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !self.home.is_absolute() {
             return Err(ConfigError::new(
-                "home must be absolute; set SEARCH_HOME or HOME",
+                "home must be absolute; set SEARCH_HOME or the user home",
             ));
         }
         if !valid_address(&self.address) {
@@ -224,7 +236,10 @@ mod tests {
 
     #[test]
     fn parse_diagnostics_identify_fields_without_quoting_values() {
-        let path = std::env::temp_dir().join(format!("search-invalid-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-invalid-{}", uuid::Uuid::new_v4()));
         std::fs::write(
             &path,
             r#"{"fetch":{"max_response_bytes":"credential-secret"}}"#,
@@ -239,7 +254,10 @@ mod tests {
 
     #[test]
     fn explicit_missing_settings_fail_instead_of_enabling_defaults() {
-        let path = std::env::temp_dir().join(format!("search-missing-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-missing-{}", uuid::Uuid::new_v4()));
         assert!(read(Some(path.clone()), true).is_err());
         assert!(read(Some(path), false).is_ok());
     }
@@ -321,18 +339,19 @@ mod tests {
     }
     #[test]
     fn home_resolution_is_explicit_absolute_and_fails_closed() {
-        let user = Some(std::ffi::OsString::from("/home/operator"));
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let user = Some(root.join("operator").into_os_string());
         assert_eq!(
             resolve_home(None, user.clone()).unwrap(),
-            PathBuf::from("/home/operator/.search")
+            root.join("operator/.search")
         );
         assert_eq!(
             resolve_home(Some("~/private-search".into()), user.clone()).unwrap(),
-            PathBuf::from("/home/operator/private-search")
+            root.join("operator/private-search")
         );
         assert_eq!(
-            resolve_home(Some("/srv/search".into()), None).unwrap(),
-            PathBuf::from("/srv/search")
+            resolve_home(Some(root.join("search").into_os_string()), None).unwrap(),
+            root.join("search")
         );
         for root in ["", "relative", "~other/search"] {
             assert!(resolve_home(Some(root.into()), user.clone()).is_err());
@@ -344,7 +363,10 @@ mod tests {
 
     #[test]
     fn explicit_settings_file_does_not_relocate_home() {
-        let root = std::env::temp_dir().join(format!("search-settings-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-settings-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let path = root.join("settings.json");
         std::fs::write(&path, "{}").unwrap();

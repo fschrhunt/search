@@ -222,6 +222,12 @@ A Node program uses `command: "node"` and `requires: ["node"]`. A native binary
 can use `command: "./adapter"`, `files: ["adapter"]`, and
 `executables: ["adapter"]`; supply a binary for the host OS and architecture.
 
+On Windows, use the installed interpreter's actual name (commonly `python`)
+in both `command` and `requires` when adapting the POST starter. Prefer an
+explicit interpreter over a `.cmd` wrapper or Unix shebang. Native executable
+packages need a Windows `.exe` built for the host architecture; Unix scripts
+are not made runnable merely by listing them in `executables`.
+
 Search writes one request to stdin and closes it:
 
 ```json

@@ -1,7 +1,7 @@
 //! Local package management. Inspection never executes code; settings changes are private and atomic.
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{IsTerminal, Read, Write},
     path::{Path, PathBuf},
 };
@@ -309,39 +309,74 @@ fn require_prerequisites(package: &Installed, adapter: &Value) -> Result<(), Str
 
 /// Check declared runtime names on absolute PATH entries; relative entries must not imply cwd discovery.
 fn executable_on_path(name: &str) -> bool {
+    #[cfg(windows)]
+    let names = windows_executable_names(name);
+    #[cfg(not(windows))]
+    let names = [name.to_string()];
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path)
             .filter(|dir| dir.is_absolute())
             .any(|dir| {
-                fs::metadata(dir.join(name)).is_ok_and(|meta| {
-                    if !meta.is_file() {
-                        return false;
-                    }
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::ffi::OsStrExt;
-                        let Ok(path) =
-                            std::ffi::CString::new(dir.join(name).as_os_str().as_bytes())
-                        else {
+                names.iter().any(|name| {
+                    fs::metadata(dir.join(name)).is_ok_and(|meta| {
+                        if !meta.is_file() {
                             return false;
-                        };
-                        // SAFETY: path is NUL-terminated and lives through this permission-only syscall.
-                        unsafe {
-                            libc::faccessat(
-                                libc::AT_FDCWD,
-                                path.as_ptr(),
-                                libc::X_OK,
-                                libc::AT_EACCESS,
-                            ) == 0
                         }
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        true
-                    }
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::ffi::OsStrExt;
+                            let Ok(path) =
+                                std::ffi::CString::new(dir.join(name).as_os_str().as_bytes())
+                            else {
+                                return false;
+                            };
+                            // SAFETY: path is NUL-terminated and lives through this permission-only syscall.
+                            unsafe {
+                                libc::faccessat(
+                                    libc::AT_FDCWD,
+                                    path.as_ptr(),
+                                    libc::X_OK,
+                                    libc::AT_EACCESS,
+                                ) == 0
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            true
+                        }
+                    })
                 })
             })
     })
+}
+
+/// PATHEXT supplies executable suffixes; malformed entries cannot introduce path traversal.
+#[cfg(windows)]
+fn windows_executable_names(name: &str) -> Vec<String> {
+    let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    let extensions: Vec<_> = extensions
+        .split(';')
+        .filter(|extension| {
+            extension.starts_with('.')
+                && extension.len() > 1
+                && extension.bytes().skip(1).all(|b| b.is_ascii_alphanumeric())
+        })
+        .collect();
+    let lower = name.to_ascii_lowercase();
+    if [".exe", ".com", ".bat", ".cmd"]
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+        || extensions
+            .iter()
+            .any(|extension| lower.ends_with(&extension.to_ascii_lowercase()))
+    {
+        vec![name.into()]
+    } else {
+        extensions
+            .into_iter()
+            .map(|extension| format!("{name}{extension}"))
+            .collect()
+    }
 }
 
 /// Extract an argument without assuming callers used the command-line parser.
@@ -533,6 +568,7 @@ fn consent(id: &str, trusted: bool) -> Result<(), String> {
 }
 
 /// Create new directories privately; existing owner-owned directories may be readable by others.
+#[cfg(unix)]
 fn private_directory(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(meta) => check_storage(&meta, true, false),
@@ -563,6 +599,7 @@ fn private_directory(path: &Path) -> Result<(), String> {
 }
 
 /// Reject links, foreign owners and shared write access; locks and new files also deny shared reads.
+#[cfg(unix)]
 fn check_storage(meta: &fs::Metadata, directory: bool, owner_only: bool) -> Result<(), String> {
     if (directory && !meta.is_dir()) || (!directory && !meta.is_file()) {
         return Err("settings storage must be a real directory/file, never a symlink".into());
@@ -584,16 +621,13 @@ fn check_storage(meta: &fs::Metadata, directory: bool, owner_only: bool) -> Resu
             .into());
         }
     }
-    #[cfg(not(unix))]
-    {
-        return Err("private settings writes currently require Unix permissions".into());
-    }
     Ok(())
 }
 
 /// Open files without following symlinks, checking descriptor ownership and the requested permission boundary.
+#[cfg(unix)]
 fn private_open(path: &Path, create_new: bool, owner_only: bool) -> Result<File, String> {
-    let mut options = OpenOptions::new();
+    let mut options = fs::OpenOptions::new();
     options.read(true).write(true).truncate(false);
     if create_new {
         options.create_new(true);
@@ -616,6 +650,23 @@ fn private_open(path: &Path, create_new: bool, owner_only: bool) -> Result<File,
         owner_only,
     )?;
     Ok(file)
+}
+
+/// Windows settings directories are created with protected current-user ACLs.
+#[cfg(windows)]
+fn private_directory(path: &Path) -> Result<(), String> {
+    crate::private_fs::directories(path)
+}
+
+/// Windows validates the opened settings or lock handle before any content is read or written.
+#[cfg(windows)]
+fn private_open(path: &Path, create_new: bool, owner_only: bool) -> Result<File, String> {
+    let boundary = if owner_only {
+        crate::private_fs::Boundary::Private
+    } else {
+        crate::private_fs::Boundary::Settings
+    };
+    crate::private_fs::open(path, true, create_new, !create_new, boundary)
 }
 
 /// Lock the entire read/change/replace transaction; retain the lock through optional package removal.
@@ -644,8 +695,9 @@ fn change_settings(
     let lock = private_open(Path::new(&lock_name), false, true)?;
     fs2::FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
     let mut settings = match fs::symlink_metadata(&path) {
-        Ok(meta) => {
-            check_storage(&meta, false, false)?;
+        Ok(_meta) => {
+            #[cfg(unix)]
+            check_storage(&_meta, false, false)?;
             let mut file = private_open(&path, false, false)?;
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
@@ -663,7 +715,12 @@ fn change_settings(
         file.write_all(&bytes).map_err(|e| e.to_string())?;
         file.write_all(b"\n").map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
+        drop(file);
+        #[cfg(windows)]
+        crate::private_fs::replace(&temp, &path)?;
+        #[cfg(unix)]
         fs::rename(&temp, &path).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
         File::open(&parent)
             .and_then(|dir| dir.sync_all())
             .map_err(|e| e.to_string())?;
