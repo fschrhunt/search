@@ -5,10 +5,23 @@
 - Add native x86_64/ARM64 CI and release builds for Linux, macOS, and Windows;
   publish Windows ZIPs and a checksummed PowerShell installer, and test installers
   on their native systems. Use runner-local temporary paths for security tests.
-- Route executable-engine temporary files through a private OS-temp `search/`
-  directory via `TMPDIR`, `TMP`, and `TEMP`. Configure `temp_dir` to override
-  the location; unsafe directories fail closed. Files are not automatically
-  cleaned up, and executable engines remain unsandboxed.
+- Tighten the SSRF guard: refuse the `0.0.0.0/8` "this network" block, local-use
+  NAT64 `64:ff9b:1::/48` addresses that embed a private or reserved IPv4 (RFC
+  8215), and the `3fff::/20` documentation range (RFC 9637), with counterexample
+  tests beside the existing ones.
+- Follow exactly the configured number of HTTP redirects: a budget of `N` now
+  allows `N` redirects, not `N` more taken than intended.
+- Recover engine-store mutations when a crash interrupts the cleanup of a
+  replaced package tree and its lease file is already gone — recreating the
+  lease when the old tree is restored — instead of wedging all later installs,
+  updates, and removals.
+- Route executable-engine scratch files through a per-user private directory
+  under the OS temp root via `TMPDIR`, `TMP`, and `TEMP`, so shared hosts cannot
+  collide or lock each other out of the default location. Configure `temp_dir`
+  to override the location; unsafe directories fail closed. Files are not
+  automatically cleaned up, and executable engines remain unsandboxed.
+- Match fetched-page passages case-insensitively for non-ASCII letters (such as
+  `Ü`/`ü`), not only ASCII, so accented queries find their paragraphs.
 - Add focused navigation READMEs for configuration, fetching, and CLI internals,
   and expand the existing engine module guide.
 - Consolidate shipped engine assets and their Rust implementation under

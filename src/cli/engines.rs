@@ -658,6 +658,12 @@ fn private_directory(path: &Path) -> Result<(), String> {
     crate::private_fs::directories(path)
 }
 
+/// Fail closed where ownership and no-follow primitives are unavailable.
+#[cfg(not(any(unix, windows)))]
+fn private_directory(_path: &Path) -> Result<(), String> {
+    Err("private settings writes currently require Unix permissions".into())
+}
+
 /// Windows validates the opened settings or lock handle before any content is read or written.
 #[cfg(windows)]
 fn private_open(path: &Path, create_new: bool, owner_only: bool) -> Result<File, String> {
@@ -667,6 +673,12 @@ fn private_open(path: &Path, create_new: bool, owner_only: bool) -> Result<File,
         crate::private_fs::Boundary::Settings
     };
     crate::private_fs::open(path, true, create_new, !create_new, boundary)
+}
+
+/// Fail closed where ownership and no-follow primitives are unavailable.
+#[cfg(not(any(unix, windows)))]
+fn private_open(_path: &Path, _create_new: bool, _owner_only: bool) -> Result<File, String> {
+    Err("private settings writes currently require Unix permissions".into())
 }
 
 /// Lock the entire read/change/replace transaction; retain the lock through optional package removal.

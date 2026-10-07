@@ -180,10 +180,22 @@ pub struct Command {
     pub max_response_bytes: u64,
 }
 
-/// Group command-engine scratch files beneath the canonical OS temp directory.
+/// Group command-engine scratch files beneath the canonical OS temporary
+/// directory, in a per-user directory so shared hosts cannot collide or lock
+/// each other out of it.
 fn default_command_temp_dir() -> PathBuf {
     let base = std::env::temp_dir();
-    base.canonicalize().unwrap_or(base).join("search")
+    let base = base.canonicalize().unwrap_or(base);
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid takes no arguments and does not dereference memory.
+        let uid = unsafe { libc::geteuid() };
+        base.join(format!("search-{uid}"))
+    }
+    #[cfg(not(unix))]
+    {
+        base.join("search")
+    }
 }
 
 /// The default bound on adapter output, independent of page-fetch limits.

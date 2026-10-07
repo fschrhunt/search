@@ -2,8 +2,9 @@
 //!
 //! Because URLs are model-chosen, this is the security-critical file. It
 //! classifies an address as private when it can reach infrastructure — loopback,
-//! RFC1918, link-local (including cloud metadata), CGNAT, multicast, unique
-//! local, and every IPv6 form that embeds such an IPv4 (NAT64, 6to4, and
+//! the 0/8 "this network" block, RFC1918, link-local (including cloud metadata),
+//! CGNAT, multicast, unique local, documentation, and every IPv6 form that
+//! embeds such an IPv4 (NAT64 well-known and local-use, 6to4, IPv4-mapped, and
 //! IPv4-compatible). Name-based hosts are checked by name, and a custom
 //! reqwest resolver re-checks every address at connect time, so a name that
 //! resolves inside the network — or a DNS answer that changes between the check
@@ -138,7 +139,8 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
 }
 
 /// IPv4 classification. Standard: loopback, private, link-local, unspecified,
-/// multicast; plus CGNAT, the TEST-NET blocks, benchmarking, and reserved.
+/// multicast; plus the 0/8 this-network block, CGNAT, the TEST-NET blocks,
+/// benchmarking, and reserved.
 fn is_public_v4(ip: Ipv4Addr) -> bool {
     let [a, b, c, _] = ip.octets();
     if ip.is_loopback()
@@ -153,8 +155,11 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
     }
     !matches!(
         (a, b, c),
+        // 0/8 "this network": only .0 is the unspecified address, the rest is
+        // reserved and must not be dialed (RFC 1122 §3.2.1.3).
+        (0, _, _)
         // 100.64/10 carrier-grade NAT
-        (100, 64..=127, _)
+        | (100, 64..=127, _)
         // 192.0.0/24
         | (192, 0, 0)
         // 198.18/15 benchmarking, 198.51.100/24 TEST-NET-2, 203.0.113/24 TEST-NET-3
@@ -204,6 +209,17 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         );
         return is_public_v4(embedded);
     }
+    // Local-use NAT64 64:ff9b:1::/48 (RFC 8215) embeds the IPv4 in bits 48..80,
+    // so a loopback or metadata address can be reached through the gateway.
+    if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001 {
+        let embedded = Ipv4Addr::new(
+            (segments[3] >> 8) as u8,
+            segments[3] as u8,
+            (segments[4] >> 8) as u8,
+            segments[4] as u8,
+        );
+        return is_public_v4(embedded);
+    }
     // 6to4 2002::/16 embeds the IPv4 in the next 32 bits.
     if segments[0] == 0x2002 {
         let embedded = Ipv4Addr::new(
@@ -219,6 +235,8 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         0x2001 if segments[1] == 0x0000 || segments[1] == 0x0db8 => false,
         // 2001:2::/48 benchmarking
         0x2001 if segments[1] == 0x0002 => false,
+        // 3fff::/20 documentation (RFC 9637)
+        0x3ff0..=0x3fff => false,
         _ => true,
     }
 }
@@ -252,22 +270,30 @@ mod tests {
             "169.254.169.254", // cloud metadata
             "100.64.0.1",      // CGNAT
             "0.0.0.0",
+            "0.0.0.1", // 0/8 "this network"
+            "0.1.2.3",
+            "0.255.255.255",
             "::1",
             "fc00::1",
             "fe80::1",
             // IPv6 forms that embed a blocked IPv4.
-            "64:ff9b::7f00:1",    // NAT64 -> 127.0.0.1
-            "64:ff9b::a9fe:a9fe", // NAT64 -> 169.254.169.254
-            "64:ff9b::6440:1",    // NAT64 -> 100.64.0.1 (CGNAT)
-            "64:ff9b::cb00:7105", // NAT64 -> 203.0.113.5 (TEST-NET-3)
-            "2002:7f00:1::",      // 6to4 -> 127.0.0.1
-            "2002:a9fe:a9fe::",   // 6to4 -> 169.254.169.254
-            "2002:6440:1::",      // 6to4 -> 100.64.0.1 (CGNAT)
-            "2002:cb00:7105::",   // 6to4 -> 203.0.113.5 (TEST-NET-3)
-            "::ffff:127.0.0.1",   // IPv4-mapped loopback
-            "::127.0.0.1",        // IPv4-compatible
-            "2001::1",            // Teredo
-            "2001:db8::1",        // documentation
+            "64:ff9b::7f00:1",       // NAT64 -> 127.0.0.1
+            "64:ff9b::a9fe:a9fe",    // NAT64 -> 169.254.169.254
+            "64:ff9b::6440:1",       // NAT64 -> 100.64.0.1 (CGNAT)
+            "64:ff9b::cb00:7105",    // NAT64 -> 203.0.113.5 (TEST-NET-3)
+            "64:ff9b:1:7f00:1::",    // local-use NAT64 -> 127.0.0.1
+            "64:ff9b:1:a9fe:a9fe::", // local-use NAT64 -> 169.254.169.254
+            "64:ff9b:1:6440:1::",    // local-use NAT64 -> 100.64.0.1 (CGNAT)
+            "64:ff9b:1:cb00:7105::", // local-use NAT64 -> 203.0.113.5 (TEST-NET-3)
+            "2002:7f00:1::",         // 6to4 -> 127.0.0.1
+            "2002:a9fe:a9fe::",      // 6to4 -> 169.254.169.254
+            "2002:6440:1::",         // 6to4 -> 100.64.0.1 (CGNAT)
+            "2002:cb00:7105::",      // 6to4 -> 203.0.113.5 (TEST-NET-3)
+            "::ffff:127.0.0.1",      // IPv4-mapped loopback
+            "::127.0.0.1",           // IPv4-compatible
+            "2001::1",               // Teredo
+            "2001:db8::1",           // documentation
+            "3fff::1",               // documentation (RFC 9637)
         ];
         for address in private {
             assert!(!is_public_ip(ip(address)), "{address} should be private");
@@ -284,6 +310,8 @@ mod tests {
             "2606:4700:4700::1111",
             "2606:4700::6810:85e5",
             "::ffff:8.8.8.8",
+            // A transition form with a public embedded address is allowed.
+            "64:ff9b:1:101:101::", // local-use NAT64 -> 1.1.1.1
         ];
         for address in public {
             assert!(is_public_ip(ip(address)), "{address} should be public");
@@ -304,7 +332,9 @@ mod tests {
             "[::1]",
             "[::ffff:127.0.0.1]",
             "[64:ff9b::a9fe:a9fe]",
+            "[64:ff9b:1:7f00:1::]",
             "[2002:7f00:1::]",
+            "[3fff::1]",
         ] {
             assert!(check_host(host, false).is_err(), "{host} should be refused");
         }
