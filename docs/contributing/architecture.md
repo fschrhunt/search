@@ -12,11 +12,12 @@ client/engine crate. Public APIs use the native modules:
 | `search::mcp` | `Server`, tools and stdio transport in `src/mcp/mod.rs`; streamable HTTP in `src/mcp/http.rs` |
 | `search::cli` | Commands and paired HTTPS host; `src/cli/{args,run,http,auth,remote,engines,..}` |
 
-Root `engines/{mwmbl,searxng}/engine.json` holds shipped declarative assets.
+`src/engines/{mwmbl,searxng}/engine.json` holds shipped declarative assets alongside
+the Rust module implementation.
 Root `build.rs` embeds the catalog and release identity. Installed packages stay
 under `SEARCH_HOME/engines` (normally `~/.search/engines`). Integration fixtures
 live under `tests/{cli,engines}`; the custom starter remains at
-`examples/engines/json-post`.
+`docs/examples/json-post`.
 
 ## Features and dependency direction
 

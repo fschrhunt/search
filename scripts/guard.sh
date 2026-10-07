@@ -29,7 +29,7 @@ found_hosts=$(
     for f in $(prod_sources); do
         awk '/^#\[cfg\(test\)\]/ { exit } /^[[:space:]]*(\/\/|\*)/ { next } { print }' "$f"
     done
-    for package in engines/*; do
+    for package in src/engines/*; do
         [ -f "$package/engine.json" ] || continue
         for f in "$package/engine.json" "$package"/*.py; do
             [ ! -f "$f" ] || cat "$f"

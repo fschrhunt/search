@@ -15,7 +15,7 @@ use catalog_build::asset;
 
 /// Generate immutable catalog tuples; schema, path and size errors fail the build.
 fn embed_catalog() -> Result<(), Box<dyn std::error::Error>> {
-    let root = Path::new(&env::var("CARGO_MANIFEST_DIR")?).join("engines");
+    let root = Path::new(&env::var("CARGO_MANIFEST_DIR")?).join("src/engines");
     println!("cargo:rerun-if-changed={}", root.display());
     let mut dirs = Vec::new();
     for entry in fs::read_dir(&root)? {

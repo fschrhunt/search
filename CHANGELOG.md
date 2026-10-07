@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Consolidate shipped engine assets and their Rust implementation under
+  `src/engines/`; move the runnable custom POST starter into `docs/examples/`.
+  Installed engine locations and package contracts are unchanged.
 - Make `./x` argument handling consistent: show command help, forward formatting
   arguments, and reject unexpected arguments to shell and guard checks.
 - Keep search orchestration opt-in and bounded: only Mwmbl runs by default,
@@ -66,7 +69,7 @@
 - Document language-independent executable engines, an offline starter, declared
   runtimes/credentials, and native-binary packaging.
 - Replace special built-in engines with installable packages and local lifecycle
-  commands; shipped assets live under `engines/`. `SEARCH_HOME` selects packages, settings, and
+  commands; shipped assets live under `src/engines/`. `SEARCH_HOME` selects packages, settings, and
   separate private trust storage. Updates preserve user settings and package
   edits; executables inherit only declared credentials and a minimal environment.
   Release builds target the root package with the default `cli` feature.

@@ -429,7 +429,7 @@ fn every_catalog_package_has_valid_assets_and_requires_no_execution_to_install()
 fn custom_post_starter_installs_without_execution_and_retains_credentials_metadata() {
     let temp = Temp::new();
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/engines/json-post")
+        .join("docs/examples/json-post")
         .canonicalize()
         .unwrap();
     let package = install_local(&temp.home(), &source).unwrap();
