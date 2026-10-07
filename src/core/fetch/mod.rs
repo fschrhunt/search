@@ -301,13 +301,15 @@ impl Fetcher {
 }
 
 /// Validate HTTP redirects before reqwest can dial a literal address or hostname.
+/// `hops` is the number of redirects already followed, so an answer of
+/// `maximum` in-flight hops means the next one would exceed the budget.
 fn check_redirect(
     url: &url::Url,
     hops: usize,
     maximum: usize,
     allow_private: bool,
 ) -> Result<(), String> {
-    if hops > maximum {
+    if hops >= maximum {
         return Err("too many redirects".into());
     }
     if !matches!(url.scheme(), "http" | "https") {
@@ -389,6 +391,9 @@ mod tests {
         let public = url::Url::parse("https://example.com/").unwrap();
         assert!(check_redirect(&public, 1, 5, false).is_ok());
         assert!(check_redirect(&public, 1, 0, false).is_err());
+        // The budget allows exactly `maximum` redirects, not maximum + 1.
+        assert!(check_redirect(&public, 4, 5, false).is_ok());
+        assert!(check_redirect(&public, 5, 5, false).is_err());
     }
     use crate::core::config::FetchSettings;
 
