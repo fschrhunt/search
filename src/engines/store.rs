@@ -134,6 +134,12 @@ fn trusted_ancestors(path: &Path) -> Result<(), String> {
     crate::private_fs::trusted_ancestors(path)
 }
 
+/// Fail closed where ownership and no-follow primitives are unavailable.
+#[cfg(not(any(unix, windows)))]
+fn trusted_ancestors(_path: &Path) -> Result<(), String> {
+    Err("private engine installation is unsupported on this platform".into())
+}
+
 /// Require current-user ownership and owner-only access for store objects.
 #[cfg(unix)]
 fn private(path: &Path, directory: bool) -> Result<(), String> {
@@ -161,6 +167,12 @@ fn private_metadata(m: &fs::Metadata, directory: bool) -> Result<(), String> {
 #[cfg(windows)]
 fn private(path: &Path, directory: bool) -> Result<(), String> {
     crate::private_fs::private(path, directory, crate::private_fs::Boundary::Private)
+}
+
+/// Fail closed where ownership and no-follow primitives are unavailable.
+#[cfg(not(any(unix, windows)))]
+fn private(_path: &Path, _directory: bool) -> Result<(), String> {
+    Err("private engine installation is unsupported on this platform".into())
 }
 
 /// Prepare command scratch space using the store's ownership and symlink checks.
@@ -247,10 +259,18 @@ fn read_file(path: &Path) -> Result<File, String> {
     crate::private_fs::read(path)
 }
 
+/// Fail closed where ownership and no-follow primitives are unavailable.
+#[cfg(not(any(unix, windows)))]
+fn read_file(_path: &Path) -> Result<File, String> {
+    Err("private engine installation is unsupported on this platform".into())
+}
+
 /// Open a no-follow file, validate ownership on its handle and confirm path/handle identity.
 fn owned_file(path: &Path) -> Result<File, String> {
     safe_path(path)?;
     private(path, false)?;
+    #[cfg(not(any(unix, windows)))]
+    return Err("private engine installation is unsupported on this platform".into());
     #[cfg(windows)]
     let file = crate::private_fs::open(
         path,
@@ -317,6 +337,8 @@ fn read(path: &Path, cap: u64, owned: bool) -> Result<Vec<u8>, String> {
 /// Create and sync new owner-only assets and control files.
 fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     safe_path(path)?;
+    #[cfg(not(any(unix, windows)))]
+    return Err("private engine installation is unsupported on this platform".into());
     #[cfg(windows)]
     let mut file = crate::private_fs::open(
         path,

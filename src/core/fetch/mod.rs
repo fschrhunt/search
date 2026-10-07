@@ -301,15 +301,15 @@ impl Fetcher {
 }
 
 /// Validate HTTP redirects before reqwest can dial a literal address or hostname.
-/// `hops` is the number of redirects already followed, so an answer of
-/// `maximum` in-flight hops means the next one would exceed the budget.
+/// `hops` counts every URL visited so far, including the initial one, so the
+/// budget allows exactly `maximum` redirects: hop `maximum + 1` is refused.
 fn check_redirect(
     url: &url::Url,
     hops: usize,
     maximum: usize,
     allow_private: bool,
 ) -> Result<(), String> {
-    if hops >= maximum {
+    if hops > maximum {
         return Err("too many redirects".into());
     }
     if !matches!(url.scheme(), "http" | "https") {
@@ -392,8 +392,8 @@ mod tests {
         assert!(check_redirect(&public, 1, 5, false).is_ok());
         assert!(check_redirect(&public, 1, 0, false).is_err());
         // The budget allows exactly `maximum` redirects, not maximum + 1.
-        assert!(check_redirect(&public, 4, 5, false).is_ok());
-        assert!(check_redirect(&public, 5, 5, false).is_err());
+        assert!(check_redirect(&public, 5, 5, false).is_ok());
+        assert!(check_redirect(&public, 6, 5, false).is_err());
     }
     use crate::core::config::FetchSettings;
 
@@ -478,5 +478,69 @@ mod tests {
             follow_target("https://example.com/b", current, 1, 0, false),
             None
         );
+    }
+
+    /// Serve a fixed redirect chain: /hop1 -> ... -> /hopN -> /end, then stop.
+    async fn serve_redirect_chain(hops: usize) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => request.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let path = String::from_utf8_lossy(&request);
+                    let path = path.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let response = if path == "/end" {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfinal"
+                            .to_string()
+                    } else {
+                        let hop: usize = path.trim_start_matches("/hop").parse().unwrap_or(0);
+                        let location = if hop >= hops {
+                            "/end".to_string()
+                        } else {
+                            format!("/hop{}", hop + 1)
+                        };
+                        format!(
+                            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                    };
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        port
+    }
+
+    /// The HTTP redirect budget allows exactly `max_redirects` hops: a chain of
+    /// that length reaches its final page, and one hop more is refused.
+    #[tokio::test]
+    async fn http_redirect_budget_allows_exactly_the_configured_hops() {
+        let settings = FetchSettings {
+            allow_private_networks: true,
+            max_redirects: 5,
+            ..FetchSettings::default()
+        };
+        let fetcher = Fetcher::new(settings, "search-test").expect("valid test client");
+
+        let port = serve_redirect_chain(5).await;
+        let page = fetcher
+            .fetch(&format!("http://127.0.0.1:{port}/hop1"))
+            .await
+            .expect("a chain of exactly `max_redirects` hops is followed");
+        assert_eq!(page.text, "final");
+
+        let port = serve_redirect_chain(6).await;
+        assert!(fetcher
+            .fetch(&format!("http://127.0.0.1:{port}/hop1"))
+            .await
+            .is_err());
     }
 }
