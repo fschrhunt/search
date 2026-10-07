@@ -12,8 +12,9 @@
 - Follow exactly the configured number of HTTP redirects: a budget of `N` now
   allows `N` redirects, not `N` more taken than intended.
 - Recover engine-store mutations when a crash interrupts the cleanup of a
-  replaced package tree and its lease file is already gone, instead of wedging
-  all later installs, updates, and removals.
+  replaced package tree and its lease file is already gone — recreating the
+  lease when the old tree is restored — instead of wedging all later installs,
+  updates, and removals.
 - Route executable-engine scratch files through a per-user private directory
   under the OS temp root via `TMPDIR`, `TMP`, and `TEMP`, so shared hosts cannot
   collide or lock each other out of the default location. Configure `temp_dir`

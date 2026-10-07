@@ -621,7 +621,13 @@ impl Store {
                 .ok_or("invalid store filename")?;
             if let Some(id) = name.strip_prefix(".old-") {
                 valid_id(id)?;
-                let _lease = lease_file(&path, false)?;
+                // A crash can leave the old tree partly deleted, with its lease
+                // file already removed; the same tolerance as deletion tombstones.
+                let _lease = if exists(&path.join(".lease"))? {
+                    Some(lease_file(&path, false)?)
+                } else {
+                    None
+                };
                 let live = self.root.join(id);
                 if exists(&live)? {
                     self.installed(id, false)?;
@@ -638,6 +644,12 @@ impl Store {
                             .map_err(|_| "invalid recovery receipt")?;
                     if m.id != id || receipt.id != id || receipt.digest != digest(&assets) {
                         return Err("invalid recovery package".into());
+                    }
+                    // Published trees carry a lease; a crashed cleanup may have
+                    // removed this one before the rest, so recreate it so the
+                    // restored package can be locked by readers and writers.
+                    if !exists(&path.join(".lease"))? {
+                        write(&path.join(".lease"), b"")?;
                     }
                     // Windows directory renames require closing descendant handles.
                     // The store lock excludes new leases throughout recovery.

@@ -259,6 +259,25 @@ fn only_mutations_recover_interrupted_replacements() {
     assert!(!old.exists());
 }
 
+/// A crash during the cleanup of a replaced tree can remove its lease file
+/// before the rest; recovery must tolerate that instead of wedging the store.
+#[test]
+fn recovery_tolerates_a_partly_deleted_old_copy() {
+    let temp = Temp::new();
+    let home = temp.home();
+    install_catalog(&home, "mwmbl").unwrap();
+    let old = home.join("engines/.old-mwmbl");
+    fs::rename(home.join("engines/mwmbl"), &old).unwrap();
+    // Simulate a delete() interrupted after the lease file was already removed.
+    fs::remove_file(old.join(".lease")).unwrap();
+    assert!(old.exists());
+    // The live package is authoritative; a later mutation recovers the debris.
+    install_catalog(&home, "searxng").unwrap();
+    assert!(!old.exists());
+    // The restored package carries a fresh lease, so it resolves and locks normally.
+    assert_eq!(resolve(&home, "mwmbl").unwrap().source, "catalog");
+}
+
 #[test]
 fn partial_deletion_tombstones_survive_inspection_and_recover_on_mutation() {
     for delete_lease in [false, true] {
