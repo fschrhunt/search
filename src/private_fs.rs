@@ -526,7 +526,7 @@ pub(crate) fn directories(path: &Path) -> Result<(), String> {
 /// Replace a synced private file on the same volume, retaining ancestor pins through publication.
 #[cfg(feature = "cli")]
 pub(crate) fn replace(temp: &Path, path: &Path) -> Result<(), String> {
-    let _pins = parents(path, true, false)?;
+    let pins = parents(path, true, false)?;
     if temp.parent() != path.parent() {
         return Err("private replacement requires the same directory".into());
     }
@@ -536,7 +536,14 @@ pub(crate) fn replace(temp: &Path, path: &Path) -> Result<(), String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => (),
         Err(e) => return Err(e.to_string()),
     }
-    let name = wide(path)?;
+    let directory = pins
+        .last()
+        .ok_or("private replacement has no parent handle")?;
+    check(directory, true, Boundary::Private)?;
+    let filename = path
+        .file_name()
+        .ok_or("private replacement has no filename")?;
+    let name: Vec<u16> = filename.encode_wide().chain([0]).collect();
     let source = raw(temp, GENERIC_READ | DELETE, OPEN_EXISTING, None, false)?;
     check(&source, false, Boundary::Private)?;
     let name_bytes = name.len().saturating_sub(1) * size_of::<u16>();
@@ -545,14 +552,15 @@ pub(crate) fn replace(temp: &Path, path: &Path) -> Result<(), String> {
     let mut buffer = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
     let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
     // SAFETY: the zeroed buffer is aligned for FILE_RENAME_INFO and has room for its
-    // variable UTF-16 tail including its NUL. The absolute destination and null
-    // RootDirectory are independent of cwd; ancestors stay pinned. No references
-    // alias the tail.
+    // variable UTF-16 tail including its NUL. Resolve the filename through the
+    // pinned parent handle, not a new write-open that conflicts with our own
+    // sharing pins. The directory stays live and the name is independent of cwd.
     unsafe {
         (*info).Anonymous.Flags =
             windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_REPLACE_IF_EXISTS
                 | windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMANTICS;
         (*info).FileNameLength = name_bytes as u32;
+        (*info).RootDirectory = directory.as_raw_handle();
         std::ptr::copy_nonoverlapping(
             name.as_ptr(),
             std::ptr::addr_of_mut!((*info).FileName).cast(),
