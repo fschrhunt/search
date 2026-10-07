@@ -8,7 +8,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[2] / 'examples' / 'engines' / 'json-post'
+ROOT = Path(__file__).resolve().parents[2] / 'docs' / 'examples' / 'json-post'
 spec = importlib.util.spec_from_file_location('custom', ROOT / 'engine.py')
 engine = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(engine)

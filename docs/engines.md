@@ -29,7 +29,7 @@ Choose the smallest transport that fits:
 | Service | Package |
 | --- | --- |
 | GET API returning JSON | An `engine.json` with field mappings, as below |
-| JSON POST, signed requests, AI APIs, or custom parsing | A command program; start with the [JSON POST example](../examples/engines/json-post) |
+| JSON POST, signed requests, AI APIs, or custom parsing | A command program; start with the [JSON POST example](examples/json-post) |
 
 For a GET API, create `my-engine/engine.json`:
 
@@ -64,7 +64,7 @@ management commands and settings. Installation copies the declared files into
 directory is not needed at runtime. There is no separate custom store,
 registration step, or implicit project discovery.
 
-For POST APIs, copy the [example directory](../examples/engines/json-post) to
+For POST APIs, copy the [example directory](examples/json-post) to
 `my-engine` and adapt `engine.py` for your service. Keep the manifest ID `json-post`
 for these commands, or replace it consistently with your own ID:
 
@@ -190,7 +190,7 @@ contents or credential values.
 
 ### Executable adapters
 
-The [POST starter manifest](../examples/engines/json-post/engine.json) shows a
+The [POST starter manifest](examples/json-post/engine.json) shows a
 Python command package. Its `adapter` fields are:
 
 | Adapter field | Meaning / default |
@@ -243,7 +243,7 @@ maintenance and must respect upstream access policies.
 
 ### Adapting the JSON POST example
 
-In [`engine.py`](../examples/engines/json-post/engine.py), change `payload()` to
+In [`engine.py`](examples/json-post/engine.py), change `payload()` to
 your vendor's request schema and `normalize()` to its result shape. Map excerpts
 or highlights to `snippet`, joining arrays as appropriate for that API. Supply a
 nonempty title; the URL is a useful fallback when the vendor returns a null title.
@@ -314,5 +314,5 @@ credentials must be available to the hosting process.
 | Busy or edited package on update | Stop processes holding it; preserve source edits before explicit removal/reinstallation |
 
 Develop custom mappings against saved responses before live testing. The
-[engine README](../engines/README.md) documents private-store internals for
+[engine README](../src/engines/README.md) documents private-store internals for
 contributors.

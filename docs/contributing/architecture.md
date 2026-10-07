@@ -2,7 +2,7 @@
 
 Search is one root Cargo package, with library `search` (`src/lib.rs`) and
 CLI binary `search` (`src/main.rs`). There is no workspace, facade, or separate
-client/engine crate. Public APIs use the native modules:
+client/engine crate. Public APIs use the native modules below.
 
 | Module | Contract / source |
 | --- | --- |
@@ -12,11 +12,17 @@ client/engine crate. Public APIs use the native modules:
 | `search::mcp` | `Server`, tools and stdio transport in `src/mcp/mod.rs`; streamable HTTP in `src/mcp/http.rs` |
 | `search::cli` | Commands and paired HTTPS host; `src/cli/{args,run,http,auth,remote,engines,..}` |
 
-Root `engines/{mwmbl,searxng}/engine.json` holds shipped declarative assets.
+For navigation within the larger modules, see the
+[configuration](../../src/core/config/README.md),
+[fetch](../../src/core/fetch/README.md), [engines](../../src/engines/README.md),
+and [CLI](../../src/cli/README.md) READMEs.
+
+`src/engines/{mwmbl,searxng}/engine.json` holds shipped declarative assets alongside
+the Rust module implementation.
 Root `build.rs` embeds the catalog and release identity. Installed packages stay
 under `SEARCH_HOME/engines` (normally `~/.search/engines`). Integration fixtures
 live under `tests/{cli,engines}`; the custom starter remains at
-`examples/engines/json-post`.
+`docs/examples/json-post`.
 
 ## Features and dependency direction
 

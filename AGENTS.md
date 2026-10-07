@@ -42,6 +42,8 @@ src/core/      protocol-free engine (`search::core::Search`)
   text.rs      text processing and passage selection
   service.rs   the in-process Search service
 src/engines/   Engine, Pool, Adapter; manifests, catalog, store and package leases
+  mwmbl/engine.json · searxng/engine.json  shipped declarative assets
+  README.md    engine module and private-store contracts
 src/client/mod.rs  shared local/remote execution and pinned HTTPS
 src/mcp/       mod.rs tools and stdio transport; http.rs streamable HTTP transport
 src/cli/       CLI and paired HTTPS host
@@ -51,10 +53,8 @@ src/cli/       CLI and paired HTTPS host
   auth.rs      persistent TLS identity, pairing and private credential storage
   remote.rs    profile selection and device management
   engines.rs   local package lifecycle, settings and diagnostics
-engines/       shipped declarative assets: mwmbl/engine.json, searxng/engine.json
-  README.md    package and private-store contracts
 tests/        integration tests and fixtures under cli/ and engines/
-examples/engines/json-post/  custom executable starter, outside the catalog
+docs/examples/json-post/  custom executable starter, outside the catalog
 scripts/guard.sh  security-surface audit: hosts, panic sites, SSRF and auth
 scripts/release.sh · scripts/formula.sh · install.sh  release tooling
 docs/          user pages and docs/contributing/ for contributors

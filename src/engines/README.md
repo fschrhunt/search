@@ -1,11 +1,16 @@
-# Shipped engine packages
+# Engines
+
+`adapter.rs` implements transports; `pool.rs` runs and ranks engines;
+`manifest.rs`, `catalog_build.rs`, and `store.rs` own package validation,
+embedding, installation, and leases. `mwmbl/` and `searxng/` contain only shipped
+package manifests, using the same adapters as custom engines.
 
 `search::engines` unifies runtime engines, adapters and the pool with engine
 manifests, the offline maintained catalog, and the local installation store.
-This directory holds shipped declarative assets, not a Rust crate. For
+This module contains Rust implementation and shipped declarative assets. For
 installation, configuration, adapter fields, credentials, and troubleshooting,
-see the [engine guide](../docs/engines.md).
-The [JSON POST starter](../examples/engines/json-post) exercises the same public
+see the [engine guide](../../docs/engines.md).
+The [JSON POST starter](../../docs/examples/json-post) exercises the same public
 local-package contract; it is not embedded in the catalog.
 
 `catalog` reads embedded metadata. `resolve` uses an installed package or the
@@ -14,7 +19,7 @@ Every other engine requires explicit installation. Inspection and installation
 never run package code, download assets, or read credentials.
 
 The root `build.rs` embeds release identity and discovers the catalog generically:
-direct child directories of `engines/` with `engine.json`, plus their declared
+direct child directories of `src/engines/` with `engine.json`, plus their declared
 files, are embedded at build time.
 Only Mwmbl and SearXNG are maintained here. Packages have no install hooks or
 per-engine Rust registrations. `mwmbl` maps a root JSON array using query parameter
@@ -26,7 +31,7 @@ contract, with no special handling for custom packages. Manifest schema 1 and
 command protocol 1 remain stable across Search releases; incompatible changes
 require a new contract version with continued version-1 support. Binary upgrades
 must preserve installed packages, settings, and credentials. See the
-[compatibility promise](../docs/engines.md#compatibility-across-search-updates)
+[compatibility promise](../../docs/engines.md#compatibility-across-search-updates)
 for field and execution guarantees and required security migrations.
 
 ## Private store contract
