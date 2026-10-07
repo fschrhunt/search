@@ -49,6 +49,9 @@ impl Adapter {
                 if settings.env.iter().any(|name| !valid_env(name)) {
                     return Err("command env must contain valid environment variable names");
                 }
+                if !settings.temp_dir.is_absolute() {
+                    return Err("temp_dir must be absolute");
+                }
                 if settings.max_response_bytes == 0 {
                     return Err("max_response_bytes must be positive");
                 }
@@ -248,6 +251,7 @@ pub(crate) fn safe_field_path(path: &serde_path_to_error::Path) -> String {
         "command",
         "args",
         "env",
+        "temp_dir",
     ];
     let mut fields = Vec::new();
     for segment in path {

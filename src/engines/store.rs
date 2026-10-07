@@ -146,6 +146,13 @@ fn private(_path: &Path, _directory: bool) -> Result<(), String> {
     Err("private engine installation is unsupported on this platform".into())
 }
 
+/// Prepare command scratch space using the store's ownership and symlink checks.
+pub(super) fn command_temp_dir(path: &Path) -> Result<(), String> {
+    safe_path(path)?;
+    trusted_ancestors(path)?;
+    mkdir(path)
+}
+
 /// Create a private directory without changing permissions of existing objects.
 fn mkdir(path: &Path) -> Result<(), String> {
     safe_path(path)?;
