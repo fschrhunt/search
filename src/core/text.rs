@@ -36,7 +36,7 @@ pub fn select(text: &str, query: &str, budget: usize) -> Vec<Passage> {
     // weight: a term in every paragraph distinguishes nothing.
     let mut document_frequency: HashMap<&str, usize> = HashMap::new();
     for paragraph in &paragraphs {
-        let lowered = paragraph.to_ascii_lowercase();
+        let lowered = paragraph.to_lowercase();
         for term in &terms {
             if lowered.contains(term.as_str()) {
                 *document_frequency.entry(term.as_str()).or_insert(0) += 1;
@@ -49,7 +49,7 @@ pub fn select(text: &str, query: &str, budget: usize) -> Vec<Passage> {
         .iter()
         .enumerate()
         .map(|(index, paragraph)| {
-            let lowered = paragraph.to_ascii_lowercase();
+            let lowered = paragraph.to_lowercase();
             let words = lowered.split_whitespace().count().max(1) as f64;
             let mut score = 0.0;
             for term in &terms {
@@ -124,7 +124,7 @@ fn query_terms(query: &str) -> Vec<String> {
     let mut seen = Vec::new();
     for term in query
         .split(|c: char| !c.is_alphanumeric())
-        .map(|t| t.to_ascii_lowercase())
+        .map(|t| t.to_lowercase())
         .filter(|t| t.chars().count() >= 2)
     {
         if !seen.contains(&term) {
@@ -185,5 +185,14 @@ mod tests {
         let passages = select(&text, "keyword", 400);
         let total: usize = passages.iter().map(|p| p.text.chars().count()).sum();
         assert!(total <= 400, "budget exceeded: {total}");
+    }
+
+    /// Non-ASCII letters are folded like ASCII ones, so mixed-case accents match.
+    #[test]
+    fn non_ascii_terms_match_case_insensitively() {
+        let text = "Einleitung ohne Treffer.\n\nHier steht ein Absatz über Suchmaschinen.";
+        let passages = select(text, "ÜBER", 2000);
+        assert_eq!(passages.len(), 1);
+        assert!(passages[0].text.contains("über Suchmaschinen"));
     }
 }
