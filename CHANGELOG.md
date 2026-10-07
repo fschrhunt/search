@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add focused navigation READMEs for configuration, fetching, and CLI internals,
+  and expand the existing engine module guide.
 - Consolidate shipped engine assets and their Rust implementation under
   `src/engines/`; move the runnable custom POST starter into `docs/examples/`.
   Installed engine locations and package contracts are unchanged.

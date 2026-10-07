@@ -1,5 +1,10 @@
 # Engines
 
+`adapter.rs` implements transports; `pool.rs` runs and ranks engines;
+`manifest.rs`, `catalog_build.rs`, and `store.rs` own package validation,
+embedding, installation, and leases. `mwmbl/` and `searxng/` contain only shipped
+package manifests, using the same adapters as custom engines.
+
 `search::engines` unifies runtime engines, adapters and the pool with engine
 manifests, the offline maintained catalog, and the local installation store.
 This module contains Rust implementation and shipped declarative assets. For

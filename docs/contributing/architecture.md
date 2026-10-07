@@ -2,7 +2,7 @@
 
 Search is one root Cargo package, with library `search` (`src/lib.rs`) and
 CLI binary `search` (`src/main.rs`). There is no workspace, facade, or separate
-client/engine crate. Public APIs use the native modules:
+client/engine crate. Public APIs use the native modules below.
 
 | Module | Contract / source |
 | --- | --- |
@@ -11,6 +11,11 @@ client/engine crate. Public APIs use the native modules:
 | `search::client` | `Client` for shared local/remote execution and pinned HTTPS; `src/client/mod.rs` |
 | `search::mcp` | `Server`, tools and stdio transport in `src/mcp/mod.rs`; streamable HTTP in `src/mcp/http.rs` |
 | `search::cli` | Commands and paired HTTPS host; `src/cli/{args,run,http,auth,remote,engines,..}` |
+
+For navigation within the larger modules, see the
+[configuration](../../src/core/config/README.md),
+[fetch](../../src/core/fetch/README.md), [engines](../../src/engines/README.md),
+and [CLI](../../src/cli/README.md) READMEs.
 
 `src/engines/{mwmbl,searxng}/engine.json` holds shipped declarative assets alongside
 the Rust module implementation.
