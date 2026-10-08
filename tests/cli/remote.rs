@@ -3,10 +3,10 @@
 #[path = "../support/windows.rs"]
 mod windows;
 use search::cli::auth::{self, Credential, Devices, Host, Remotes};
-use search::client::{self as client_api, Client, Operation, Remote};
+use search::client::{self as client_api, Client, Remote};
 use std::{path::PathBuf, sync::Arc};
 
-/// Own an isolated HTTPS host, its offline engine package, and shutdown cleanup.
+/// Own an isolated HTTPS host, its offline settings-defined engine, and shutdown cleanup.
 struct Fixture {
     root: PathBuf,
     host: Arc<Host>,
@@ -32,11 +32,11 @@ impl Fixture {
             address: address.to_string(),
             engines: search::core::config::EngineSettings {
                 use_engines: vec!["fixture".into()],
+                config: [("fixture".into(), fixture_engine(&root))].into(),
                 ..Default::default()
             },
             ..Default::default()
         };
-        install_fixture(&root);
         let engine = Arc::new(search::core::Search::open(config).unwrap());
         let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
             host.cert.as_bytes().to_vec(),
@@ -110,11 +110,7 @@ async fn remote_response_limit_is_configurable_and_fails_without_fallback() {
         ..Default::default()
     };
     let client = Client::remote_with_settings(profile.clone(), &tiny).unwrap();
-    assert!(client
-        .execute(Operation::Engines)
-        .await
-        .unwrap_err()
-        .contains("too large"));
+    assert!(client.engines().await.unwrap_err().contains("too large"));
     let client = Client::remote(profile).unwrap();
     assert_eq!(client.engines().await.unwrap(), vec!["fixture"]);
 }
@@ -150,7 +146,7 @@ async fn pairing_trust_reuse_and_revoke_over_https() {
         403
     );
     let execution = Client::remote(profile.clone()).unwrap();
-    assert!(execution.execute(Operation::Engines).await.is_ok());
+    assert!(execution.engines().await.is_ok());
     let mcp = client.post(format!("{}/mcp", fixture.url)).bearer_auth(&profile.secret)
         .header("Accept", "application/json, text/event-stream")
         .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"paired-http","version":"1"}}})).send().await.unwrap();
@@ -185,7 +181,7 @@ async fn pairing_trust_reuse_and_revoke_over_https() {
             .status(),
         401
     );
-    let error = execution.execute(Operation::Engines).await.unwrap_err();
+    let error = execution.engines().await.unwrap_err();
     assert!(error.contains("401") && error.contains("no local fallback"));
 }
 
@@ -258,15 +254,13 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
         .await
         .unwrap();
     assert!(response.results.iter().any(|r| r.title == "Remote needle"));
-    let pages = client
-        .fetch(&["http://127.0.0.1/private".into()])
-        .await
-        .unwrap();
-    assert!(pages[0].error.is_some());
+    let urls = ["http://127.0.0.1/first", "http://127.0.0.1/second"].map(String::from);
+    let pages = client.fetch(&urls).await.unwrap();
     assert_eq!(
-        client.execute(Operation::Engines).await.unwrap(),
-        serde_json::json!(["fixture"])
+        pages.iter().map(|p| &p.url).collect::<Vec<_>>(),
+        [&urls[0], &urls[1]]
     );
+    assert!(pages.iter().all(|page| page.error.is_some()));
     let output = local_command(binary, &client_root)
         .args(["needle", "-json", "-config", config.as_deref().unwrap()])
         .output()
@@ -336,23 +330,10 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
     );
 }
 
-/// Explicitly install trusted host code that returns a unique result without network access.
-fn install_fixture(home: &std::path::Path) {
-    let source = home.join("fixture-source");
-    std::fs::create_dir(&source).unwrap();
+/// Define trusted host code that returns a unique result without network access.
+fn fixture_engine(root: &std::path::Path) -> serde_json::Value {
     std::fs::write(
-        source.join("engine.json"),
-        serde_json::json!({
-            "schema_version": 1, "id": "fixture", "version": "1",
-            "description": "Offline remote routing fixture",
-            "adapter": {"type": "command", "command": if cfg!(windows) { "python.exe" } else { "python3" }, "args": ["program.py"]},
-            "files": ["program.py"]
-        })
-        .to_string(),
-    )
-    .unwrap();
-    std::fs::write(
-        source.join("program.py"),
+        root.join("program.py"),
         r#"import json, sys
 request = json.load(sys.stdin)
 assert request['version'] == 1
@@ -361,7 +342,12 @@ json.dump({'results':[{'url':'https://example.invalid/needle','title':'Remote ne
 "#,
     )
     .unwrap();
-    search::engines::install_local(home, &source).unwrap();
+    serde_json::json!({
+        "type": "command",
+        "command": if cfg!(windows) { "python.exe" } else { "python3" },
+        "args": ["program.py"],
+        "cwd": root
+    })
 }
 
 /// Keep each CLI subprocess's home isolated without mutating the test runner environment.
@@ -385,10 +371,10 @@ async fn credential_clients_refuse_redirects() {
         "https://localhost:{}",
         listener.local_addr().unwrap().port()
     );
-    let target = format!("{}/v1/execute", fixture.url);
+    let target = format!("{}/v1/status", fixture.url);
     let router = axum::Router::new().route(
-        "/v1/execute",
-        axum::routing::post(move || async move { axum::response::Redirect::temporary(&target) }),
+        "/v1/status",
+        axum::routing::get(move || async move { axum::response::Redirect::temporary(&target) }),
     );
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
         fixture.host.cert.as_bytes().to_vec(),
@@ -408,7 +394,7 @@ async fn credential_clients_refuse_redirects() {
     });
     let error = Client::remote(profile)
         .unwrap()
-        .execute(Operation::Engines)
+        .engines()
         .await
         .unwrap_err();
     assert!(error.contains("307"), "{error}");
@@ -435,7 +421,7 @@ async fn expired_pairing_code_is_refused_over_https() {
     );
 }
 
-/// A local command renews a live HTTPS host, retaining existing devices and persisted bounds.
+/// A local command renews a live HTTPS host, retaining existing devices; each code admits one device.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pair_code_renews_a_running_host_with_persisted_attempts() {
     let fixture = Fixture::new().await;
@@ -478,9 +464,29 @@ async fn pair_code_renews_a_running_host_with_persisted_attempts() {
     assert_eq!(statuses.iter().filter(|s| s.is_success()).count(), 1);
     assert_eq!(statuses.iter().filter(|s| **s == 403).count(), 1);
     assert_eq!(pair(code).await.unwrap().status(), 403);
-    assert!(Client::remote(existing)
-        .unwrap()
-        .execute(Operation::Engines)
+    assert!(Client::remote(existing).unwrap().engines().await.is_ok());
+}
+
+/// The host enforces the shared input bounds itself rather than trusting paired clients.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_refuses_out_of_bounds_input() {
+    let fixture = Fixture::new().await;
+    let profile = fixture.pair().await;
+    let client = client_api::client(&profile).unwrap();
+    let search = client
+        .get(format!("{}/v1/search", fixture.url))
+        .query(&[("q", "x".repeat(513))])
+        .bearer_auth(&profile.secret)
+        .send()
         .await
-        .is_ok());
+        .unwrap();
+    assert_eq!(search.status(), 400);
+    let fetch = client
+        .post(format!("{}/v1/fetch", fixture.url))
+        .json(&serde_json::json!({"urls": vec!["https://example.com"; 11]}))
+        .bearer_auth(&profile.secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fetch.status(), 400);
 }

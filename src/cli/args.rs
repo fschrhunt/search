@@ -4,16 +4,17 @@
 //! human and script surface; `serve` is the HTTP and MCP surface; a bare
 //! `search` with no query is the stdio MCP surface a harness spawns. Keeping
 //! "no arguments" as MCP means an existing harness keeps working while a person
-//! gets a real search command. Package verbs manage local engines; `engines`
-//! inspects installed packages and the catalog.
+//! gets a real search command. Engine verbs edit and test the engines defined in
+//! settings. A leading `-config PATH` applies to whatever command follows.
 
 /// One parsed command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// Manage or explicitly test local engine packages.
+    /// List, select, configure or explicitly test settings-defined engines.
     Engines {
         action: String,
         args: Vec<String>,
+        json: bool,
         config: Option<String>,
     },
     /// Serve MCP over stdio (the default with no arguments, and what a harness
@@ -38,6 +39,8 @@ pub enum Command {
         urls: Vec<String>,
         query: Option<String>,
         max_characters: Option<usize>,
+        /// Character to start reading at, from an earlier continuation.
+        offset: usize,
         json: bool,
         config: Option<String>,
     },
@@ -58,6 +61,26 @@ pub enum Command {
 /// subcommand's flags.
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String> {
     let mut args = args.into_iter().peekable();
+    if matches!(
+        args.peek().map(String::as_str),
+        Some("-config" | "--config")
+    ) {
+        let _ = args.next();
+        let path = args.next().ok_or("missing value for -config")?;
+        let rest: Vec<String> = args.collect();
+        // Bare `search -config PATH` keeps harness configs on stdio MCP.
+        if rest.is_empty() {
+            return Ok(Command::Stdio { config: Some(path) });
+        }
+        let mut command = parse(rest)?;
+        if let Some(config) = command.config_mut() {
+            if config.is_some() {
+                return Err("-config given twice".into());
+            }
+            *config = Some(path);
+        }
+        return Ok(command);
+    }
     match args.peek().map(String::as_str) {
         None => Ok(Command::Stdio { config: None }),
         Some("stdio") => {
@@ -83,9 +106,12 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
             let _ = args.next();
             parse_engines(args)
         }
-        Some("install" | "enable" | "disable" | "update" | "remove" | "configure" | "test") => {
-            parse_engines(args)
-        }
+        Some("enable" | "disable" | "configure" | "test") => parse_engines(args),
+        // Package commands were removed; say so instead of searching for the words.
+        Some(verb @ ("install" | "update" | "remove")) => Err(format!(
+            "search {verb} was removed: engines are defined in settings; see search engines \
+             and docs/engines.md (use search -- {verb} ... to search for these words)"
+        )),
         Some("remote") | Some("devices") | Some("revoke") | Some("pair-code") => {
             let verb = args.next().ok_or("missing command")?;
             let action = if verb == "remote" {
@@ -110,11 +136,6 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
         }
         Some("version") | Some("--version") | Some("-version") => Ok(Command::Version),
         Some("help") | Some("--help") | Some("-h") => Ok(Command::Help),
-        // Flags with no subcommand: default to stdio so harness configs that
-        // pass `-config` still work.
-        Some("-config") | Some("--config") => Ok(Command::Stdio {
-            config: parse_config_flag(args)?,
-        }),
         Some(flag) if flag.starts_with('-') && flag != "--" => parse_search(args),
         // Anything else is a search query.
         Some(_) => parse_search(args),
@@ -133,18 +154,16 @@ Start:
   search -- test driven development  search a literal query starting with a command
 
 Engines:
-  search engines available       inspect the shipped catalog (Mwmbl, SearXNG)
-  search engines list            inspect installed engines and setup requirements
-  search install ID|./PATH        install a catalog or local package; do not enable
-  search configure ID [KEY VALUE] inspect or change adapter settings
-  search enable ID [--trust]      select an engine; commands require explicit trust
-  search disable ID              deselect an engine
-  search update ID               update an unedited catalog package
-  search remove ID               disable and remove an installed package
-  search test ID QUERY            run one engine explicitly and print JSON
-  Engine commands always run locally. search engines ACTION aliases still work.
-  Shipped and custom packages share ~/.search/engines; SEARCH_HOME changes the root.
-  Use env/header_env for credentials, never values in shareable settings.
+  search engines [list] [-json]   built-in and configured engines, selection and setup status
+  search configure ID             show an engine's effective adapter and status
+  search configure ID FIELD VALUE set one adapter field in engines.config.ID
+  search enable ID                select a ready engine
+  search disable ID               deselect an engine
+  search test ID QUERY [-json]    run one engine explicitly and print its results
+  Built-in: mwmbl (keyless default), searxng (needs url). Any other ID is a custom
+  http or command adapter in engines.config. Engine commands always run locally.
+  Settings are trusted: a command engine runs that program as you. Reference
+  credentials by environment variable name (env/header_env), never by value.
 
 Hosting:
   search serve [flags]            host the paired HTTPS JSON API and MCP endpoint
@@ -169,25 +188,30 @@ Search flags:
 
 Fetch flags:
   -query TEXT                    relevant passages; fall back to text if none match
-  -max-chars N                    per-page character limit (1–40000)
+  -max-chars N                    per-page character limit (default: whole page)
+  -offset N                       continue reading at character N
   -json                          print JSON instead of text
   Without query or character limit, return the full clean page.
   Focused reads default to 6000 characters per page.
 
 Settings:
-  -config PATH                    settings file; place after the command/query
+  -config PATH                    settings file; before or after the command/query
   Default: $CONFIG or $SEARCH_HOME/settings.json (SEARCH_HOME defaults to ~/.search).
   Double-dash flag forms are accepted. Use -- before literal query/value arguments.
   Guide: https://github.com/fschrhunt/search/tree/main/docs"
 }
 
-/// Parse package commands, extracting settings flags before literal `--` arguments.
+/// Parse engine commands, extracting flags before literal `--` arguments.
+/// A bare `search engines` lists engines.
 fn parse_engines<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String> {
-    let mut args = args.into_iter();
-    let action = args
-        .next()
-        .ok_or("expected an engines command; see search help")?;
+    let mut args = args.into_iter().peekable();
+    let action = match args.peek().map(String::as_str) {
+        None => "list".to_owned(),
+        Some(flag) if flag.starts_with('-') => "list".to_owned(),
+        Some(_) => args.next().ok_or("expected an engines command")?,
+    };
     let mut config = None;
+    let mut json = false;
     let mut values = Vec::new();
     let mut literal = false;
     while let Some(arg) = args.next() {
@@ -196,7 +220,9 @@ fn parse_engines<I: IntoIterator<Item = String>>(args: I) -> Result<Command, Str
             "-config" | "--config" if !literal => {
                 config = Some(args.next().ok_or("missing value for -config")?);
             }
-            "--trust" if !literal && action == "enable" => values.push(arg),
+            "-json" | "--json" if !literal && matches!(action.as_str(), "list" | "test") => {
+                json = true
+            }
             flag if !literal && flag.starts_with('-') => {
                 return Err(format!("unknown engine flag {flag:?}"));
             }
@@ -204,21 +230,9 @@ fn parse_engines<I: IntoIterator<Item = String>>(args: I) -> Result<Command, Str
         }
     }
     let valid = match action.as_str() {
-        "available" | "list" => values.is_empty(),
-        "install" | "update" | "remove" | "disable" => values.len() == 1,
+        "list" => values.is_empty(),
+        "enable" | "disable" => values.len() == 1,
         "configure" => values.len() == 1 || values.len() == 3,
-        "enable" => {
-            values
-                .iter()
-                .filter(|arg| arg.as_str() != "--trust")
-                .count()
-                == 1
-                && values
-                    .iter()
-                    .filter(|arg| arg.as_str() == "--trust")
-                    .count()
-                    <= 1
-        }
         "test" => values.len() >= 2 && !values.iter().skip(1).all(|s| s.trim().is_empty()),
         _ => false,
     };
@@ -228,8 +242,24 @@ fn parse_engines<I: IntoIterator<Item = String>>(args: I) -> Result<Command, Str
     Ok(Command::Engines {
         action,
         args: values,
+        json,
         config,
     })
+}
+
+impl Command {
+    /// The settings-path slot of commands that read settings.
+    fn config_mut(&mut self) -> Option<&mut Option<String>> {
+        match self {
+            Command::Engines { config, .. }
+            | Command::Stdio { config }
+            | Command::Serve { config, .. }
+            | Command::Search { config, .. }
+            | Command::Fetch { config, .. }
+            | Command::Remote { config, .. } => Some(config),
+            Command::Version | Command::Help => None,
+        }
+    }
 }
 
 fn parse_config_flag<I: IntoIterator<Item = String>>(args: I) -> Result<Option<String>, String> {
@@ -298,6 +328,7 @@ fn parse_fetch<I: IntoIterator<Item = String>>(args: I) -> Result<Command, Strin
     let mut urls = Vec::new();
     let mut query = None;
     let mut max_characters = None;
+    let mut offset = 0;
     let mut json = false;
     let mut config = None;
     let mut args = args.into_iter();
@@ -311,6 +342,13 @@ fn parse_fetch<I: IntoIterator<Item = String>>(args: I) -> Result<Command, Strin
                         .parse()
                         .map_err(|_| "-max-chars needs a number".to_string())?,
                 );
+            }
+            "-offset" | "--offset" => {
+                offset = args
+                    .next()
+                    .ok_or("missing value for -offset")?
+                    .parse()
+                    .map_err(|_| "-offset needs a number".to_string())?;
             }
             "-json" | "--json" => json = true,
             "-config" | "--config" => {
@@ -327,6 +365,7 @@ fn parse_fetch<I: IntoIterator<Item = String>>(args: I) -> Result<Command, Strin
         urls,
         query,
         max_characters,
+        offset,
         json,
         config,
     })
@@ -369,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_commands_extract_config_and_preserve_literal_query() {
+    fn engine_commands_extract_flags_and_preserve_literal_query() {
         assert_eq!(
             parse(args(&[
                 "engines",
@@ -377,6 +416,7 @@ mod tests {
                 "fixture",
                 "--config",
                 "x.json",
+                "-json",
                 "--",
                 "-site:example.com",
                 "rust"
@@ -385,30 +425,33 @@ mod tests {
             Command::Engines {
                 action: "test".into(),
                 args: vec!["fixture".into(), "-site:example.com".into(), "rust".into()],
+                json: true,
                 config: Some("x.json".into())
             }
         );
         for values in [
             vec!["engines", "test", "fixture"],
             vec!["engines", "list", "fixture"],
-            vec!["engines", "install", "fixture", "--trust"],
             vec!["engines", "configure", "fixture", "url"],
-            vec!["engines", "enable", "fixture", "--trust", "--trust"],
+            vec!["engines", "enable", "fixture", "-json"],
+            vec!["engines", "install", "fixture"],
             vec!["engines", "list", "--home", "/tmp"],
         ] {
-            assert!(parse(args(&values)).is_err());
+            assert!(parse(args(&values)).is_err(), "{values:?}");
         }
-        assert!(parse(args(&["engines", "enable", "fixture", "--trust"])).is_ok());
+        for listing in [vec!["engines"], vec!["engines", "-json"]] {
+            assert!(matches!(
+                parse(args(&listing)).unwrap(),
+                Command::Engines { action, .. } if action == "list"
+            ));
+        }
     }
 
     #[test]
     fn top_level_engine_commands_route_like_their_aliases() {
         for values in [
-            vec!["install", "searxng"],
-            vec!["enable", "fixture", "--trust"],
+            vec!["enable", "fixture"],
             vec!["disable", "fixture"],
-            vec!["update", "fixture"],
-            vec!["remove", "fixture"],
             vec!["configure", "fixture", "url", "https://example.com"],
             vec!["test", "fixture", "--", "-config", "literal"],
         ] {
@@ -420,12 +463,47 @@ mod tests {
         }
     }
 
+    /// Removed package commands explain themselves instead of becoming searches,
+    /// and `--` still searches for the words.
+    #[test]
+    fn removed_package_commands_are_errors() {
+        for verb in ["install", "update", "remove"] {
+            let error = parse(args(&[verb, "searxng"])).unwrap_err();
+            assert!(error.contains("removed"), "{error}");
+        }
+        assert!(matches!(
+            parse(args(&["--", "install", "rust"])).unwrap(),
+            Command::Search { query, .. } if query == "install rust"
+        ));
+    }
+
+    /// A leading `-config PATH` applies to the command after it.
+    #[test]
+    fn leading_config_applies_to_the_following_command() {
+        assert_eq!(
+            parse(args(&["-config", "s.json", "fetch", "https://a.example"])).unwrap(),
+            Command::Fetch {
+                urls: vec!["https://a.example".into()],
+                query: None,
+                max_characters: None,
+                offset: 0,
+                json: false,
+                config: Some("s.json".into()),
+            }
+        );
+        assert!(matches!(
+            parse(args(&["--config", "s.json", "rust", "async"])).unwrap(),
+            Command::Search { query, config: Some(path), .. } if query == "rust async" && path == "s.json"
+        ));
+        assert!(parse(args(&["-config", "a.json", "engines", "-config", "b.json"])).is_err());
+    }
+
     #[test]
     fn literal_search_queries_can_contain_command_names_and_flags() {
         assert_eq!(
-            parse(args(&["--", "install", "-engines", "literal"])).unwrap(),
+            parse(args(&["--", "test", "-engines", "literal"])).unwrap(),
             Command::Search {
-                query: "install -engines literal".into(),
+                query: "test -engines literal".into(),
                 limit: 10,
                 json: false,
                 engines: vec![],
@@ -493,6 +571,7 @@ mod tests {
                 urls: vec!["https://a.example".into()],
                 query: Some("x y".into()),
                 max_characters: None,
+                offset: 0,
                 json: false,
                 config: None,
             }

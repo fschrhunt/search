@@ -1,12 +1,12 @@
-//! The HTTP surface: a small JSON API and the streamable MCP endpoint on one
-//! listener.
+//! The HTTP surface: one small JSON API and the streamable MCP endpoint on one
+//! listener. Paired `Client`s use the same API as scripts.
 //!
 //! Paired HTTPS protects every API and MCP request; pairing alone is public.
+//! Inputs are checked with the shared `client` validators before execution.
 
 use std::sync::Arc;
 
-use crate::core::Search;
-use crate::engines::Query;
+use crate::core::{Query, Search};
 use crate::mcp::mount as mount_mcp;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -15,7 +15,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use crate::cli::{auth::Host, run::build_service};
-use crate::client::{Client, Operation};
+use crate::client::{validate_search, validate_urls};
 
 /// Host the local engine behind paired HTTPS until interrupted.
 pub async fn serve(
@@ -124,7 +124,6 @@ pub fn router(service: Arc<Search>, host: Arc<Host>, allowed_host: &str) -> Rout
         .route("/v1/status", get(status))
         .route("/v1/search", get(search))
         .route("/v1/fetch", post(fetch))
-        .route("/v1/execute", post(execute))
         .nest_service("/mcp", mcp)
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&host),
@@ -180,29 +179,6 @@ async fn pair(
     }
 }
 
-/// Execute the shared CLI/stdio contract with bounded inputs on the host.
-async fn execute(State(service): State<Arc<Search>>, Json(operation): Json<Operation>) -> Response {
-    match &operation {
-        Operation::Search { query }
-            if query.text.trim().is_empty() || query.text.len() > 512 || query.limit > 50 =>
-        {
-            return bad_request("invalid search bounds")
-        }
-        Operation::Fetch { urls }
-            if urls.is_empty()
-                || urls.len() > 10
-                || urls.iter().any(|u| u.trim().is_empty() || u.len() > 8192) =>
-        {
-            return bad_request("invalid fetch bounds")
-        }
-        _ => {}
-    }
-    match Client::Local(service).execute(operation).await {
-        Ok(value) => Json(value).into_response(),
-        Err(_) => status_error(StatusCode::INTERNAL_SERVER_ERROR, "operation failed"),
-    }
-}
-
 /// Query parameters for the search endpoint.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -214,19 +190,12 @@ struct SearchParams {
     engines: Option<String>,
 }
 
-/// `GET /v1/search`.
+/// `GET /v1/search`: one `Answer`. An omitted limit means the host's configured
+/// maximum; `engines` is a comma-separated list of package IDs.
 async fn search(
     State(service): State<Arc<Search>>,
     axum::extract::Query(params): axum::extract::Query<SearchParams>,
 ) -> Response {
-    let query = params.q.trim();
-    if query.is_empty() {
-        return bad_request("missing query parameter q");
-    }
-    if query.len() > 512 {
-        return bad_request("query too long");
-    }
-    let limit = params.limit.unwrap_or(10).clamp(1, 50);
     let engines = params
         .engines
         .map(|p| {
@@ -236,14 +205,15 @@ async fn search(
                 .collect()
         })
         .unwrap_or_default();
-    let response = service
-        .search(Query {
-            text: query.to_string(),
-            limit,
-            engines,
-        })
-        .await;
-    Json(response).into_response()
+    let query = match validate_search(Query {
+        text: params.q,
+        limit: params.limit.unwrap_or(0),
+        engines,
+    }) {
+        Ok(query) => query,
+        Err(message) => return bad_request(&message),
+    };
+    Json(service.search(query).await).into_response()
 }
 
 /// Body for the fetch endpoint.
@@ -253,26 +223,17 @@ struct FetchBody {
     urls: Vec<String>,
 }
 
-/// `POST /v1/fetch`.
+/// `POST /v1/fetch`: `{"pages": [Page...]}` in input order; per-URL failures
+/// are reported on each page rather than failing the request.
 async fn fetch(State(service): State<Arc<Search>>, Json(body): Json<FetchBody>) -> Response {
-    if body.urls.is_empty() {
-        return bad_request("no urls given");
-    }
-    if body.urls.len() > 10 {
-        return bad_request("at most 10 urls per request");
-    }
-    if body
-        .urls
-        .iter()
-        .any(|url| url.trim().is_empty() || url.len() > 8192)
-    {
-        return bad_request("URLs must be nonempty and at most 8192 bytes");
+    if let Err(message) = validate_urls(&body.urls) {
+        return bad_request(&message);
     }
     let pages = service.fetch(&body.urls).await;
-    Json(serde_json::json!({"results": pages, "count": pages.len()})).into_response()
+    Json(serde_json::json!({ "pages": pages })).into_response()
 }
 
-/// `GET /v1/status`.
+/// `GET /v1/status`: the host version and its selected engine names.
 async fn status(State(service): State<Arc<Search>>) -> Response {
     Json(serde_json::json!({
         "version": crate::VERSION,
@@ -286,12 +247,11 @@ async fn health() -> Response {
     Json(serde_json::json!({"status": "ok", "version": crate::VERSION})).into_response()
 }
 
-/// A JSON 400.
+/// A JSON 400 naming the violated bound.
 fn bad_request(message: &str) -> Response {
-    status_error(StatusCode::BAD_REQUEST, message)
-}
-
-/// A JSON error with a status.
-fn status_error(status: StatusCode, message: &str) -> Response {
-    (status, Json(serde_json::json!({ "error": message }))).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": message })),
+    )
+        .into_response()
 }

@@ -169,7 +169,8 @@ impl Config {
         }
     }
 
-    /// Reject malformed listeners and unusable bounds; authentication belongs to adapters.
+    /// Reject malformed listeners, unusable bounds and malformed engine selection;
+    /// engines themselves resolve when a pool opens.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !self.home.is_absolute() {
             return Err(ConfigError::new(

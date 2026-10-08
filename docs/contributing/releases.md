@@ -25,8 +25,8 @@ scripts/release.sh v0.2.0    # after merging it: checks CI passed on main, then 
 3. **release**: collect all six archives, generate checksums, attest build
    provenance, and publish the GitHub release with the changelog section as notes.
    Builds target the root package with the default `cli` feature. Root `build.rs`
-   embeds the catalog and release identity; binary upgrades do not replace
-   installed engines, settings, or private trust files.
+   stamps release identity; binary upgrades do not rewrite settings or private
+   trust files.
 4. **formula**: regenerates `search.rb` (`scripts/formula.sh`) for the release and
    pushes it to main.
 5. **install**: a real installer run on all six native runners: `install.sh` for

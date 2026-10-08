@@ -2,21 +2,20 @@
 //!
 //! Extraction has three layers, in order:
 //!
-//! 1. **Main content** — Readability-style scoring (through `dom_smoothie`)
-//!    finds the article and discards chrome: ads, sidebars, related rails,
-//!    cookie banners, comment sections. A regex tag-scanner cannot do this; the
-//!    published benchmark gap between raw text and a scoring extractor is large
-//!    (precision roughly 0.53 versus 0.89), which is why the first version's
-//!    scanner was replaced.
-//! 2. **Visibility** — a pass over the parsed tree drops visually hidden text
-//!    (inline styles, `hidden`, `aria-hidden`, screen-reader class names) and
-//!    residual boilerplate. A fetched page is untrusted content, and hidden text
-//!    is the cheapest place to hide an instruction aimed at a model.
-//! 3. **Serialization** — the surviving text is emitted as plain, delimited data
-//!    with links and images neutralized, so page content cannot form a markdown
-//!    image that exfiltrates, and cannot be mistaken for an instruction.
+//! 1. **Visibility** — a pass over the parsed tree drops visually hidden text
+//!    (inline styles, `hidden`, `aria-hidden`, screen-reader classes) and
+//!    boilerplate containers. A fetched page is untrusted content, and hidden
+//!    text is the cheapest place to hide an instruction aimed at a model.
+//! 2. **Main content** — Readability-style scoring (through `dom_smoothie`)
+//!    finds the article in the cleaned tree and discards remaining chrome. A
+//!    page with no article falls back to the whole cleaned document.
+//! 3. **Serialization** — articles are emitted as Markdown, so headings, lists
+//!    and code blocks keep their structure; link targets are dropped and image
+//!    syntax neutralized, so page content cannot form a markdown image that
+//!    exfiltrates. Whole-page fallbacks and PDFs are plain text.
 //!
-//! Non-HTML bodies pass through [`sanitize`], which still makes them safe text.
+//! Text is never truncated here: the fetcher's byte bound limits work, and
+//! callers choose how much of a page to read.
 
 mod serialize;
 mod visibility;
@@ -25,222 +24,208 @@ pub(super) use serialize::Page;
 
 use dom_smoothie::{Config, Readability, TextMode};
 
-/// The largest text a page contributes. Readability has already removed the
-/// chrome; this is the ceiling before a caller asks for a narrower passage.
-const MAX_TEXT: usize = 120_000;
+/// The longest a `<meta http-equiv="refresh">` delay may be to count as a
+/// redirect. Longer delays are auto-reloads of a page that has its own content.
+const MAX_REFRESH_SECONDS: f64 = 5.0;
 
-/// Extract a page from an HTML body. `url` is the final URL, used to resolve
-/// relative links before they are neutralized.
+/// Extract a page from an HTML body. `url` is the final URL, used to resolve a
+/// refresh target and relative links before they are neutralized.
 ///
 /// Runs synchronously and is deliberately not `Send`; the caller moves the body
-/// onto a blocking thread. A page with no extractable article falls back to a
-/// cleaned-text reading so a fetch still returns something useful.
+/// onto a blocking thread.
 pub(super) fn read(body: &str, url: &str) -> Page {
-    // A page that exists only to redirect is answered as such before any
-    // article extraction: its "content" is the redirect, not prose.
-    if let Some(redirect) = redirect_target(body, url) {
-        let document = dom_query::Document::from(body);
+    let document = dom_query::Document::from(body);
+    // A meta refresh is the only client-side redirect honored: it names its
+    // target declaratively. Script redirects are not guessed at, because a
+    // guess turns an app shell or an error page into some other page.
+    if let Some(redirect) = refresh_target(&document, url) {
         visibility::strip(&document);
+        visibility::remove_code(&document);
         return Page {
-            title: String::new(),
+            title: title(&document),
             byline: None,
             published: None,
             site: None,
-            text: serialize::clean(&document.text()),
+            text: body_text(&document),
             redirect: Some(redirect),
         };
     }
-    match extract_article(body, url) {
-        Some(article) => {
-            let text = serialize::clean(&article.text_content);
-            if text.trim().is_empty() {
-                return fallback(body, url);
-            }
-            Page {
-                title: article.title,
-                byline: article.byline,
-                published: article.published_time,
-                site: article.site_name,
-                text: cap(text),
-                redirect: None,
-            }
-        }
-        None => fallback(body, url),
+    let fallback_title = title(&document);
+    visibility::strip(&document);
+    let article = extract_article(document, url).filter(|article| {
+        // Readability may settle on a tiny fragment of a page it cannot score;
+        // a few words are not an article.
+        article.text_content.split_whitespace().nth(20).is_some()
+    });
+    match article {
+        Some(article) => Page {
+            title: if article.title.trim().is_empty() {
+                fallback_title
+            } else {
+                article.title
+            },
+            byline: article.byline,
+            published: article.published_time,
+            site: article.site_name,
+            text: serialize::markdown(&article.text_content),
+            redirect: None,
+        },
+        None => fallback(body, fallback_title),
     }
 }
 
-/// Detect a client-side redirect: a page that exists only to send the reader
-/// elsewhere, via `<meta http-equiv="refresh">`, `location.replace`/`href`, or a
-/// single dominant link. A trailing slash or canonical-URL move is common, and
-/// an agent that receives "Click here to be redirected" has gained nothing.
+/// The target of a prompt `<meta http-equiv="refresh" content="N; url=...">`,
+/// resolved against the page URL, or `None` when the page does not redirect.
+/// A refresh inside `<noscript>` counts: it is what a reader without scripts
+/// is sent to, and scripted readers are sent to the same place.
 ///
-/// The returned target is untrusted — it came from the page — so the caller
-/// must run it back through the SSRF guard before following it. `None` when the
-/// page is not a bare redirect.
-pub(super) fn redirect_target(body: &str, url: &str) -> Option<String> {
-    let document = dom_query::Document::from(body);
-    // A page that exists only to redirect has almost no *visible* prose; script
-    // and noscript text does not count, so measure the text after the same
-    // visibility pass the reader uses.
-    visibility::strip(&document);
-    if document.text().trim().chars().count() > 200 {
+/// The target is untrusted page content; the caller runs it back through the
+/// SSRF guard before following it.
+pub(super) fn refresh_target(document: &dom_query::Document, url: &str) -> Option<String> {
+    let mut contents: Vec<String> = refresh_contents(document);
+    for noscript in document.select("noscript").nodes() {
+        let fragment = dom_query::Document::from(noscript.text().to_string());
+        contents.extend(refresh_contents(&fragment));
+    }
+    contents
+        .iter()
+        .filter_map(|content| refresh_url(content))
+        .filter_map(|target| resolve(url, &target))
+        .find(|target| !same_page(target, url))
+}
+
+/// The `content` values of every refresh `<meta>` in a document.
+fn refresh_contents(document: &dom_query::Document) -> Vec<String> {
+    document
+        .select("meta[http-equiv]")
+        .nodes()
+        .iter()
+        .filter(|node| {
+            node.attr("http-equiv")
+                .is_some_and(|equiv| equiv.trim().eq_ignore_ascii_case("refresh"))
+        })
+        .filter_map(|node| node.attr("content").map(|content| content.to_string()))
+        .collect()
+}
+
+/// Parse `N; url=TARGET` (also `N,url=`, `N; TARGET`, quoted targets), keeping
+/// only prompt refreshes that name a target.
+fn refresh_url(content: &str) -> Option<String> {
+    let content = content.trim();
+    let split = content.find([';', ',']).unwrap_or(content.len());
+    let delay: f64 = content.get(..split)?.trim().parse().ok()?;
+    if !(0.0..=MAX_REFRESH_SECONDS).contains(&delay) {
         return None;
     }
-    // A meta refresh names the target directly. Read it from the original body
-    // because the visibility pass may have removed the noscript wrapper.
-    let original = dom_query::Document::from(body);
-    if let Some(meta) = original.try_select("meta[http-equiv]") {
-        for node in meta.nodes() {
-            let equiv = node
-                .attr("http-equiv")
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if equiv != "refresh" {
-                continue;
-            }
-            if let Some(content) = node.attr("content") {
-                if let Some(target) = url_after(&content) {
-                    if let Some(resolved) = resolve(url, &target) {
-                        return Some(resolved);
-                    }
-                }
-            }
+    let mut target = content.get(split..)?.trim_start_matches([';', ',']).trim();
+    if target.len() >= 3
+        && target
+            .get(..3)
+            .is_some_and(|key| key.eq_ignore_ascii_case("url"))
+    {
+        let after = target.get(3..)?.trim_start();
+        if let Some(value) = after.strip_prefix('=') {
+            target = value.trim();
         }
     }
-    // A script may set `location.replace("…")` or `location.href = "…"`. The
-    // target is often a variable, so also accept a single URL literal assigned
-    // near the call — the common `const target = "…"; location.replace(target)`.
-    for node in original.select("script").nodes() {
-        let script = node.text();
-        for marker in ["location.replace(", "location.assign(", "location.href"] {
-            if !script.contains(marker) {
-                continue;
-            }
-            if let Some(target) = first_url_literal(&script) {
-                if let Some(resolved) = resolve(url, &target) {
-                    return Some(resolved);
-                }
-            }
-        }
-    }
-    // Otherwise, a single dominant link with no other content.
-    if let Some(anchor) = original.try_select("a[href]") {
-        if anchor.nodes().len() == 1 {
-            if let Some(href) = anchor.attr("href") {
-                if let Some(resolved) = resolve(url, &href) {
-                    return Some(resolved);
-                }
-            }
-        }
-    }
-    None
+    let target = target.trim_matches(['"', '\'']).trim();
+    (!target.is_empty()).then(|| target.to_string())
 }
 
-/// The first URL-looking string literal in a script, for the
-/// `const target = "…"; location.replace(target)` shape.
-fn first_url_literal(script: &str) -> Option<String> {
-    let mut rest = script;
-    while let Some(quote_at) = rest.find(['"', '\'']) {
-        // `quote_at` indexes a found quote, so the byte exists and is ASCII.
-        let quote = *rest.as_bytes().get(quote_at)?;
-        let after = rest.get(quote_at + 1..)?;
-        if let Some(end) = after.find(quote as char) {
-            let literal = after.get(..end)?;
-            if literal.starts_with("http://")
-                || literal.starts_with("https://")
-                || literal.starts_with('/')
-            {
-                return Some(literal.to_string());
-            }
-            rest = after.get(end..)?;
-        } else {
-            break;
-        }
-    }
-    None
-}
-
-/// Extract the `url=` portion of a meta-refresh content value.
-fn url_after(content: &str) -> Option<String> {
-    let lower = content.to_ascii_lowercase();
-    let at = lower.find("url=")?;
-    let target = content[at + 4..].trim().trim_matches(['"', '\'', ';']);
-    Some(target.to_string())
-}
-
-/// Resolve a possibly-relative target against the page URL. Only http(s) results
-/// are returned; the caller still applies the SSRF guard.
+/// Resolve a possibly-relative target against the page URL. Only http(s)
+/// results are returned; the caller still applies the SSRF guard.
 fn resolve(base: &str, target: &str) -> Option<String> {
     let base = url::Url::parse(base).ok()?;
     let resolved = base.join(target.trim()).ok()?;
-    if resolved.scheme() == "http" || resolved.scheme() == "https" {
-        Some(resolved.to_string())
-    } else {
-        None
-    }
+    matches!(resolved.scheme(), "http" | "https").then(|| resolved.to_string())
 }
 
-/// Run `dom_smoothie` with settings biased toward precision — the right bias for
-/// an agent, which cannot skim past an included ad but loses only a paragraph if
-/// one is dropped.
-fn extract_article(body: &str, url: &str) -> Option<dom_smoothie::Article> {
+/// Whether two URLs name the same document, ignoring fragments: a refresh to
+/// the current page is a reload, not a redirect.
+fn same_page(a: &str, b: &str) -> bool {
+    let strip = |raw: &str| {
+        url::Url::parse(raw).ok().map(|mut url| {
+            url.set_fragment(None);
+            url
+        })
+    };
+    strip(a).is_some_and(|a| strip(b).is_some_and(|b| a == b))
+}
+
+/// The cleaned text of the document body; the head is metadata, not prose.
+fn body_text(document: &dom_query::Document) -> String {
+    let body = document.select("body");
+    let text = if body.exists() {
+        body.text()
+    } else {
+        document.text()
+    };
+    serialize::clean(&text)
+}
+
+/// The document's `<title>`, whitespace-collapsed.
+fn title(document: &dom_query::Document) -> String {
+    document
+        .select("title")
+        .first()
+        .text()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Run `dom_smoothie` over the visibility-cleaned document, with settings biased
+/// toward precision — the right bias for an agent, which cannot skim past an
+/// included ad but loses only a paragraph if one is dropped.
+fn extract_article(document: dom_query::Document, url: &str) -> Option<dom_smoothie::Article> {
     let config = Config {
         // A page smaller than this is likely not an article; the fallback
         // cleaned-text reading handles those.
         char_threshold: 200,
-        // Keep the tree small enough to bound work on a hostile page.
-        max_elements_to_parse: 40_000,
-        text_mode: TextMode::Formatted,
+        // No element ceiling: exceeding one makes Readability fail outright,
+        // which turned large articles into whole-page dumps. The fetcher's byte
+        // bound already limits the work a hostile page can cause.
+        max_elements_to_parse: 0,
+        text_mode: TextMode::Markdown,
         ..Default::default()
     };
     let url = if url.is_empty() { None } else { Some(url) };
-    let mut readability = Readability::new(body, url, Some(config)).ok()?;
-
-    // The visibility pass mutates the tree before it is serialized, so hidden
-    // text never reaches the output. It runs on the post-extraction document,
-    // which is the subtree Readability chose.
-    visibility::strip(&readability.doc);
-
+    let mut readability = Readability::with_document(document, url, Some(config)).ok()?;
     readability.parse().ok()
 }
 
-/// When no article is found — a listing page, a short doc, a JSON-ish page —
-/// fall back to the visibility pass over the whole document plus plain text.
-fn fallback(body: &str, _url: &str) -> Page {
+/// When no article is found — a listing page, a short doc, an app shell — read
+/// the whole visible document, without scripts, styles, hidden text or chrome.
+fn fallback(body: &str, title: String) -> Page {
     let document = dom_query::Document::from(body);
     visibility::strip(&document);
-    let text = serialize::clean(&document.text());
+    visibility::remove_code(&document);
+    visibility::remove_chrome(&document);
     Page {
-        title: String::new(),
+        title,
         byline: None,
         published: None,
         site: None,
-        text: cap(text),
+        text: body_text(&document),
         redirect: None,
     }
 }
 
-/// Make any byte stream valid UTF-8 text and strip control characters, for
-/// non-HTML bodies that still need to be safe to store and read.
-pub(super) fn sanitize(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        match ch {
-            '\n' | '\t' => out.push(ch),
-            c if c.is_control() => {}
-            c => out.push(c),
-        }
-    }
-    cap(out)
+/// Make decoded text safe to return: strip control characters other than
+/// newlines and tabs. Used for non-HTML text bodies.
+pub(super) fn sanitize(text: &str) -> String {
+    text.chars()
+        .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
+        .collect()
 }
 
-/// Cap text at `MAX_TEXT` characters on a character boundary.
-fn cap(text: String) -> String {
-    if text.chars().count() <= MAX_TEXT {
-        return text;
-    }
-    text.chars().take(MAX_TEXT).collect()
+/// Extract the text layer of a PDF. Scanned PDFs without a text layer read as
+/// empty and are reported as such by the caller. Runs on a blocking thread; a
+/// malformed file that makes the parser panic surfaces as a failed task.
+pub(super) fn pdf(bytes: &[u8]) -> Result<String, String> {
+    let text = pdf_extract::extract_text_from_mem(bytes)
+        .map_err(|_| "PDF could not be read".to_string())?;
+    Ok(serialize::clean(&sanitize(&text)))
 }
 
 #[cfg(test)]
@@ -279,30 +264,53 @@ mod tests {
     }
 
     #[test]
-    fn control_characters_are_stripped_from_non_html() {
-        assert_eq!(sanitize(b"a\x00b\nc"), "ab\nc");
+    fn control_characters_are_stripped_from_text() {
+        assert_eq!(sanitize("a\u{0}b\nc\td"), "ab\nc\td");
     }
 
+    /// A prompt meta refresh, including one inside `<noscript>`, names the target.
     #[test]
-    fn a_client_side_redirect_names_its_target() {
-        // The shape a trailing-slash move uses: near-empty page, JS redirect,
-        // meta-refresh fallback, one link.
-        let html = "<!doctype html><title>Redirect</title>\
-            <script>window.location.replace(\"https://example.com/docs/\");</script>\
-            <noscript><meta http-equiv=\"refresh\" content=\"0; url=https://example.com/docs/\"></noscript>\
-            <p><a href=\"https://example.com/docs/\">Click here</a></p>";
-        assert_eq!(
-            redirect_target(html, "https://example.com/docs").as_deref(),
-            Some("https://example.com/docs/")
-        );
+    fn a_meta_refresh_names_its_target() {
+        for html in [
+            "<meta http-equiv=\"refresh\" content=\"0; url=https://example.com/docs/\">",
+            "<meta http-equiv=\"Refresh\" content=\"2;URL='/docs/'\">",
+            "<noscript><meta http-equiv=\"refresh\" content=\"0;url=/docs/\"></noscript>",
+        ] {
+            let page = read(html, "https://example.com/docs");
+            assert_eq!(
+                page.redirect.as_deref(),
+                Some("https://example.com/docs/"),
+                "{html}"
+            );
+        }
     }
 
+    /// Script mentions, lone links, slow auto-reloads and self-refreshes are
+    /// not redirects: guessing turned app shells and error pages into other pages.
     #[test]
-    fn a_content_page_is_not_a_redirect() {
-        let html = "<html><body><article><p>This is a substantial article with real content \
-            and several sentences so that it is clearly not a redirect stub. It keeps going \
-            for a while to exceed the character threshold that guards this check.</p>\
-            <p>A second paragraph adds more.</p></article></body></html>";
-        assert_eq!(redirect_target(html, "https://example.com/x"), None);
+    fn only_a_prompt_meta_refresh_is_a_redirect() {
+        for html in [
+            "<script>if (location.href.indexOf('x') < 0) { cfg = '/api/bootstrap.json'; }</script><div id=root></div>",
+            "<script>window.location.replace(\"https://example.com/next\")</script>",
+            "<h1>Page not found</h1><p><a href=\"/\">Go home</a></p>",
+            "<meta http-equiv=\"refresh\" content=\"300; url=https://example.com/live\"><p>news</p>",
+            "<meta http-equiv=\"refresh\" content=\"0; url=https://example.com/docs#top\">",
+            "<meta http-equiv=\"refresh\" content=\"30\">",
+        ] {
+            assert_eq!(read(html, "https://example.com/docs").redirect, None, "{html}");
+        }
+    }
+
+    /// A page Readability cannot score is read whole, without code, styles or
+    /// site chrome, and keeps its document title.
+    #[test]
+    fn the_fallback_reads_visible_text_without_code() {
+        let html = "<html><head><title>  Short   Page </title><style>.x{color:red}</style>\
+            <script>window.theme = 'dark';</script></head>\
+            <body><header><nav>Home About</nav></header><p>Two words.</p>\
+            <noscript>Enable JavaScript.</noscript><footer>Copyright</footer></body></html>";
+        let page = read(html, "https://example.com/");
+        assert_eq!(page.title, "Short Page");
+        assert_eq!(page.text, "Two words.");
     }
 }

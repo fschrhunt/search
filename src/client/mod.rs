@@ -1,15 +1,48 @@
-//! Shared local and remote execution for CLI and MCP. Remote failures never fall back.
+//! Shared local and remote execution for CLI and MCP, and the input bounds every
+//! surface enforces. Remote calls use the host's REST API and never fall back.
 use crate::core::{Answer, Page, Query, Search};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Operations shared by CLI and stdio MCP, executed on the hosting machine.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "operation", rename_all = "lowercase", deny_unknown_fields)]
-pub enum Operation {
-    Search { query: Query },
-    Fetch { urls: Vec<String> },
-    Engines,
+/// Most results one query may request, before the host's `search.max_results` cap.
+pub const MAX_LIMIT: usize = 50;
+/// Most URLs one fetch may read.
+pub const MAX_URLS: usize = 10;
+
+/// Trim one search query, refusing empty text and text over 512 bytes.
+pub fn validate_query(text: &str) -> Result<String, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        Err("query must not be empty".into())
+    } else if text.len() > 512 {
+        Err("query must be 512 bytes or fewer".into())
+    } else {
+        Ok(text.to_string())
+    }
+}
+
+/// Bound a whole search request: a valid query and a limit capped at [`MAX_LIMIT`].
+/// A zero limit is kept, meaning the host's configured maximum.
+pub fn validate_search(query: Query) -> Result<Query, String> {
+    Ok(Query {
+        text: validate_query(&query.text)?,
+        limit: query.limit.min(MAX_LIMIT),
+        engines: query.engines,
+    })
+}
+
+/// Require one to [`MAX_URLS`] URLs, each nonempty and at most 8192 bytes.
+pub fn validate_urls(urls: &[String]) -> Result<(), String> {
+    if urls.is_empty() || urls.len() > MAX_URLS {
+        return Err("provide between one and ten URLs".into());
+    }
+    if urls
+        .iter()
+        .any(|url| url.trim().is_empty() || url.len() > 8192)
+    {
+        return Err("URLs must be nonempty and at most 8192 bytes".into());
+    }
+    Ok(())
 }
 
 /// A saved credential. Keep it in an owner-only sidecar, never in settings.
@@ -201,66 +234,121 @@ impl Client {
             profile,
         })
     }
-    /// Execute one bounded operation with no retries or local fallback.
-    pub async fn execute(&self, operation: Operation) -> Result<serde_json::Value, String> {
+    /// Search within shared bounds, preserving the engine's response shape.
+    pub async fn search(&self, query: Query) -> Result<Answer, String> {
+        let query = validate_search(query)?;
         match self {
-            Self::Local(search) => match operation {
-                Operation::Search { query } => serde_json::to_value(search.search(query).await),
-                Operation::Fetch { urls } => serde_json::to_value(search.fetch(&urls).await),
-                Operation::Engines => serde_json::to_value(search.engine_names()),
-            }
-            .map_err(|e| e.to_string()),
+            Self::Local(search) => Ok(search.search(query).await),
             Self::Remote {
                 profile,
                 client,
                 max_response_bytes,
             } => {
-                let response = client
-                    .post(format!("{}/v1/execute", profile.url.trim_end_matches('/')))
-                    .bearer_auth(&profile.secret)
-                    .json(&operation)
-                    .send()
-                    .await
-                    .map_err(|_| "paired remote connection failed; no local fallback")?;
-                if !response.status().is_success() {
-                    return Err(format!(
-                        "paired remote returned {}; no local fallback",
-                        response.status()
-                    ));
+                let mut params = vec![("q", query.text), ("limit", query.limit.to_string())];
+                if !query.engines.is_empty() {
+                    params.push(("engines", query.engines.join(",")));
                 }
-                read_response(response, *max_response_bytes).await
+                let request = client.get(endpoint(profile, "v1/search")).query(&params);
+                call(request, profile, *max_response_bytes).await
             }
         }
     }
-    /// Search while preserving the engine's response shape.
-    pub async fn search(&self, query: Query) -> Result<Answer, String> {
-        match self {
-            Self::Local(search) => Ok(search.search(query).await),
-            Self::Remote { .. } => {
-                serde_json::from_value(self.execute(Operation::Search { query }).await?)
-                    .map_err(|e| e.to_string())
-            }
-        }
-    }
-    /// Fetch while preserving metadata and input order.
+    /// Fetch within shared bounds, preserving metadata and input order.
     pub async fn fetch(&self, urls: &[String]) -> Result<Vec<Page>, String> {
+        validate_urls(urls)?;
         match self {
             Self::Local(search) => Ok(search.fetch(urls).await),
-            Self::Remote { .. } => serde_json::from_value(
-                self.execute(Operation::Fetch {
-                    urls: urls.to_vec(),
-                })
-                .await?,
-            )
-            .map_err(|e| e.to_string()),
+            Self::Remote {
+                profile,
+                client,
+                max_response_bytes,
+            } => {
+                #[derive(Deserialize)]
+                struct Pages {
+                    pages: Vec<Page>,
+                }
+                let request = client
+                    .post(endpoint(profile, "v1/fetch"))
+                    .json(&serde_json::json!({ "urls": urls }));
+                let pages: Pages = call(request, profile, *max_response_bytes).await?;
+                Ok(pages.pages)
+            }
         }
     }
     /// Return the host's selected engine names.
     pub async fn engines(&self) -> Result<Vec<String>, String> {
         match self {
             Self::Local(search) => Ok(search.engine_names()),
-            Self::Remote { .. } => serde_json::from_value(self.execute(Operation::Engines).await?)
-                .map_err(|e| e.to_string()),
+            Self::Remote {
+                profile,
+                client,
+                max_response_bytes,
+            } => {
+                #[derive(Deserialize)]
+                struct Status {
+                    engines: Vec<String>,
+                }
+                let request = client.get(endpoint(profile, "v1/status"));
+                let status: Status = call(request, profile, *max_response_bytes).await?;
+                Ok(status.engines)
+            }
         }
+    }
+}
+
+/// Send one device-authenticated request with no retries or local fallback,
+/// decoding a JSON answer of at most `max_bytes`.
+async fn call<T: serde::de::DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+    profile: &Remote,
+    max_bytes: usize,
+) -> Result<T, String> {
+    let response = request
+        .bearer_auth(&profile.secret)
+        .send()
+        .await
+        .map_err(|_| "paired remote connection failed; no local fallback")?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "paired remote returned {}; no local fallback",
+            response.status()
+        ));
+    }
+    read_response(response, max_bytes).await
+}
+
+/// The absolute URL of one API path on the paired origin.
+fn endpoint(profile: &Remote, path: &str) -> String {
+    format!("{}/{path}", profile.url.trim_end_matches('/'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_bounds_trim_text_and_cap_but_keep_a_zero_limit() {
+        let bounded = |text: &str, limit| {
+            validate_search(Query {
+                text: text.into(),
+                limit,
+                engines: Vec::new(),
+            })
+        };
+        let query = bounded(" rust ", 500).unwrap();
+        assert_eq!((query.text.as_str(), query.limit), ("rust", MAX_LIMIT));
+        assert_eq!(bounded("rust", 0).unwrap().limit, 0);
+        assert!(bounded(" ", 10).is_err());
+        assert!(bounded(&"x".repeat(513), 10).is_err());
+    }
+
+    #[test]
+    fn fetch_bounds_refuse_empty_oversized_and_too_many_urls() {
+        let url = |u: &str| vec![u.to_string()];
+        assert!(validate_urls(&url("https://example.com")).is_ok());
+        assert!(validate_urls(&[]).is_err());
+        assert!(validate_urls(&url(" ")).is_err());
+        assert!(validate_urls(&url(&"x".repeat(8193))).is_err());
+        assert!(validate_urls(&vec!["https://example.com".into(); MAX_URLS + 1]).is_err());
     }
 }

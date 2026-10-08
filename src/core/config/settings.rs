@@ -8,7 +8,8 @@ use std::time::Duration;
 /// deliberate act; the frontend provides paired HTTPS authentication.
 pub const DEFAULT_ADDRESS: &str = "127.0.0.1:8642";
 
-/// Inert service configuration; opening a pool resolves packages and runtime resources.
+/// Inert service configuration; opening a pool resolves engines and runtime resources.
+/// Settings are trusted operator configuration: they can define executables.
 /// Duration values are milliseconds.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -17,7 +18,8 @@ pub struct Config {
     pub notes: BTreeMap<String, String>,
     /// Listen address, `host:port`.
     pub address: String,
-    /// Package and settings root, resolved independently of the settings file.
+    /// Search home (settings and trust), resolved independently
+    /// of the settings file.
     #[serde(skip)]
     pub home: PathBuf,
     /// The user agent sent by page fetching and HTTP engines.
@@ -87,16 +89,17 @@ impl FetchSettings {
     }
 }
 
-/// Which installed engine packages run, and their direct adapter overrides.
+/// Which engines run, and how each is defined.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EngineSettings {
     /// Enable live web engines. False returns no search results.
     pub enabled: bool,
-    /// Selected package IDs; an empty list disables all live engines.
+    /// Selected engine IDs; an empty list disables all live engines.
     #[serde(rename = "use")]
     pub use_engines: Vec<String>,
-    /// Per-package shallow overrides; values must be objects.
+    /// Per-engine adapter objects: shallow overrides of a built-in preset, or a
+    /// complete `http`/`command` adapter for any other ID.
     pub config: BTreeMap<String, serde_json::Value>,
 }
 
@@ -161,6 +164,7 @@ pub struct Http {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Command {
+    /// An absolute executable path, or a bare name looked up on `PATH`.
     pub command: String,
     /// JSON data passed in the request, never interpolated into arguments.
     #[serde(default)]
@@ -168,9 +172,10 @@ pub struct Command {
     /// Explicitly inherited credential environment variable names.
     #[serde(default)]
     pub env: Vec<String>,
-    /// Resolved package root; callers cannot override it in settings.
-    #[serde(skip)]
-    pub cwd: PathBuf,
+    /// Absolute working directory; resolution defaults it to the command's
+    /// parent directory when `command` is absolute, otherwise Search home.
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
     /// Private scratch directory exported as TMPDIR, TMP, and TEMP to the child.
     #[serde(default = "default_command_temp_dir")]
     pub temp_dir: PathBuf,

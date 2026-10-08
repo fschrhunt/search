@@ -1,16 +1,17 @@
-//! The service's settings: its package home and listener, how long a
-//! query may run, and which search engines are enabled.
+//! The service's settings: its home and listener, how long a query may run,
+//! and which search engines are enabled and how each is defined.
 //!
 //! Omitted fields use safe defaults; explicit values are validated, not replaced.
 //! Credential values stay in the environment or frontend storage; settings
-//! reference only the variable names needed by engine adapters.
+//! reference only the variable names needed by engine adapters. Settings are
+//! trusted operator configuration: a command engine entry runs an executable.
 
 mod defaults;
 pub(crate) mod engines;
 mod load;
 mod settings;
 
-pub use engines::{resolve_adapter, valid_engine_id};
+pub use engines::{valid_engine_id, Preset, DEFAULT_ENGINE, PRESETS};
 pub use settings::{
     Adapter, Command, Config, EngineSettings, FetchSettings, Http, RemoteSettings, SearchSettings,
     DEFAULT_ADDRESS,

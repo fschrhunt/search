@@ -1,8 +1,80 @@
-//! Validate configured adapters without resolving credentials or contacting endpoints.
+//! Engine definitions: built-in presets, selection checks, and resolving one
+//! engine ID to a validated adapter, without reading credentials or contacting
+//! endpoints.
+//!
+//! A preset ID merges its `engines.config` entry shallowly over the compiled-in
+//! adapter and may not change its `type`; any other ID must be configured with a
+//! complete adapter. Errors name the engine and field, never configured values.
 
-use super::{Adapter, EngineSettings};
+use std::path::Path;
 
-/// Package IDs are bounded, safe path components.
+use serde_json::{json, Map, Value};
+
+use super::{Adapter, ConfigError, EngineSettings};
+
+/// The engine selected when settings omit `engines.use`.
+pub const DEFAULT_ENGINE: &str = "mwmbl";
+
+/// A built-in engine compiled into the binary.
+pub struct Preset {
+    pub id: &'static str,
+    pub description: &'static str,
+    /// Adapter fields the operator must supply before the preset can run.
+    pub required: &'static [&'static str],
+    adapter: fn() -> Value,
+}
+
+/// Every built-in engine, in display order.
+pub const PRESETS: &[Preset] = &[
+    Preset {
+        id: "mwmbl",
+        description: "Community-crawled web index; keyless API, subject to service limits",
+        required: &[],
+        adapter: || {
+            json!({
+                "type": "http",
+                "url": "https://api.mwmbl.org/search/",
+                "query_param": "s",
+                "results_pointer": "",
+                "title_pointer": "/title",
+                "url_pointer": "/url",
+                "snippet_pointer": "/extract",
+                "text_part_pointer": "/value"
+            })
+        },
+    },
+    Preset {
+        id: "searxng",
+        description: "Your SearXNG instance's full /search URL; it must allow JSON output",
+        required: &["url"],
+        adapter: || {
+            json!({
+                "type": "http",
+                "url": "",
+                "query_param": "q",
+                "params": {"format": "json"},
+                "results_pointer": "/results",
+                "title_pointer": "/title",
+                "url_pointer": "/url",
+                "snippet_pointer": "/content"
+            })
+        },
+    },
+];
+
+impl Preset {
+    /// The preset with this ID, if any.
+    pub fn find(id: &str) -> Option<&'static Preset> {
+        PRESETS.iter().find(|preset| preset.id == id)
+    }
+
+    /// The compiled-in adapter object, before any settings entry is merged.
+    pub fn adapter(&self) -> Value {
+        (self.adapter)()
+    }
+}
+
+/// Engine IDs are bounded, lowercase identifiers.
 pub fn valid_engine_id(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -12,7 +84,8 @@ pub fn valid_engine_id(name: &str) -> bool {
 }
 
 impl EngineSettings {
-    /// Validate settings only; package presence is checked after remote selection.
+    /// Validate selection and entry shapes only; engines are resolved when a
+    /// pool opens, after remote selection.
     pub(super) fn validate(&self) -> Result<(), String> {
         let mut seen = std::collections::BTreeSet::new();
         for name in &self.use_engines {
@@ -33,6 +106,96 @@ impl EngineSettings {
         }
         Ok(())
     }
+
+    /// The raw adapter object for `id`: its entry merged over a preset, or the
+    /// entry alone for a custom engine. Checks the transport type, not fields.
+    pub fn definition(&self, id: &str) -> Result<Map<String, Value>, ConfigError> {
+        if !valid_engine_id(id) {
+            return Err(ConfigError::new(
+                "invalid engine ID; use lowercase letters, digits, - or _ (max 64)",
+            ));
+        }
+        let error = |message: String| ConfigError::new(format!("engine {id}: {message}"));
+        let entry = match self.config.get(id) {
+            None => None,
+            Some(value) => Some(
+                value
+                    .as_object()
+                    .ok_or_else(|| error(format!("engines.config.{id} must be an object")))?,
+            ),
+        };
+        let Some(preset) = Preset::find(id) else {
+            let entry = entry.ok_or_else(|| {
+                error(format!(
+                    "not configured; define engines.config.{id} with type http or command"
+                ))
+            })?;
+            if !matches!(
+                entry.get("type").and_then(Value::as_str),
+                Some("http" | "command")
+            ) {
+                return Err(error(format!(
+                    "engines.config.{id}.type must be http or command"
+                )));
+            }
+            return Ok(entry.clone());
+        };
+        let mut merged = match preset.adapter() {
+            Value::Object(object) => object,
+            _ => return Err(error("built-in adapter is not an object".into())),
+        };
+        if let Some(entry) = entry {
+            if entry
+                .get("type")
+                .is_some_and(|value| Some(value) != merged.get("type"))
+            {
+                return Err(error("type cannot change for a built-in engine".into()));
+            }
+            merged.extend(entry.clone());
+        }
+        Ok(merged)
+    }
+
+    /// Resolve `id` to a complete, validated adapter. Command engines get an
+    /// absolute working directory: `cwd`, else the parent of an absolute
+    /// `command`, else the engine's private scratch directory, which is created
+    /// before every run and so always exists.
+    pub fn adapter(&self, id: &str) -> Result<Adapter, ConfigError> {
+        let merged = self.definition(id)?;
+        let error = |message: &str| ConfigError::new(format!("engine {id}: {message}"));
+        for field in Preset::find(id).map_or(&[][..], |preset| preset.required) {
+            if merged.get(*field).is_none_or(|value| match value {
+                Value::Null => true,
+                Value::String(value) => value.trim().is_empty(),
+                Value::Array(value) => value.is_empty(),
+                Value::Object(value) => value.is_empty(),
+                _ => false,
+            }) {
+                return Err(error(&format!(
+                    "required field {field} is missing; run search configure {id} {field} {}",
+                    field.to_ascii_uppercase()
+                )));
+            }
+        }
+        let mut adapter: Adapter = serde_path_to_error::deserialize(Value::Object(merged))
+            .map_err(|failure| {
+                let field = safe_field_path(failure.path());
+                error(&format!(
+                    "invalid adapter field {field}; check engines.config.{id}"
+                ))
+            })?;
+        if let Adapter::Command(command) = &mut adapter {
+            if command.cwd.is_none() {
+                let program = Path::new(&command.command);
+                command.cwd = Some(match program.parent() {
+                    Some(parent) if program.is_absolute() => parent.to_path_buf(),
+                    _ => command.temp_dir.clone(),
+                });
+            }
+        }
+        adapter.validate().map_err(error)?;
+        Ok(adapter)
+    }
 }
 
 impl Adapter {
@@ -42,6 +205,16 @@ impl Adapter {
             Adapter::Command(settings) => {
                 if settings.command.trim().is_empty() || settings.command.contains('\0') {
                     return Err("command must name an executable");
+                }
+                if !std::path::Path::new(&settings.command).is_absolute()
+                    && settings.command.contains(['/', '\\'])
+                {
+                    return Err(
+                        "command must be an absolute path or a bare executable name on PATH",
+                    );
+                }
+                if settings.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute()) {
+                    return Err("cwd must be absolute");
                 }
                 if settings.args.iter().any(|arg| arg.contains('\0')) {
                     return Err("args contains NUL");
@@ -107,68 +280,6 @@ impl Adapter {
         }
         Ok(())
     }
-}
-
-/// Merge direct adapter fields and validate setup without executing the package.
-/// Shared with CLI enable/configure; never quotes configured values in errors.
-pub fn resolve_adapter(
-    package: &crate::engines::Installed,
-    overrides: Option<&serde_json::Value>,
-) -> Result<Adapter, super::ConfigError> {
-    let id = &package.manifest.id;
-    if !valid_engine_id(id) {
-        return Err(super::ConfigError::new("invalid package ID"));
-    }
-    let error = |message: &str| super::ConfigError::new(format!("engine {id}: {message}"));
-    let mut merged = package
-        .manifest
-        .adapter
-        .as_object()
-        .cloned()
-        .ok_or_else(|| error("adapter must be an object"))?;
-    if let Some(overrides) = overrides {
-        let overrides = overrides
-            .as_object()
-            .ok_or_else(|| error("config must be an object"))?;
-        if overrides
-            .get("type")
-            .is_some_and(|value| Some(value) != merged.get("type"))
-        {
-            return Err(error("config.type cannot change the package adapter type"));
-        }
-        merged.extend(overrides.clone());
-    }
-    for field in &package.manifest.required {
-        if merged.get(field).is_none_or(|value| match value {
-            serde_json::Value::Null => true,
-            serde_json::Value::String(value) => value.trim().is_empty(),
-            serde_json::Value::Array(value) => value.is_empty(),
-            serde_json::Value::Object(value) => value.is_empty(),
-            _ => false,
-        }) {
-            // Only safe field identifiers are reflected, never arbitrary manifest strings.
-            if !field.is_empty()
-                && field
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            {
-                return Err(error(&format!("required config field {field} is missing; run search configure {id} {field} VALUE")));
-            }
-            return Err(error("required adapter field is missing"));
-        }
-    }
-    let mut adapter: Adapter = serde_path_to_error::deserialize(serde_json::Value::Object(merged)).map_err(|failure| {
-        let field = safe_field_path(failure.path());
-        error(&format!("invalid adapter field {field}; check engines.config.{id} and the package adapter schema"))
-    })?;
-    adapter.validate().map_err(error)?;
-    if let Adapter::Command(settings) = &mut adapter {
-        if !package.path.is_absolute() {
-            return Err(error("command package root must be absolute"));
-        }
-        settings.cwd = package.path.clone();
-    }
-    Ok(adapter)
 }
 
 /// Parse an absolute HTTP URL with a host, no userinfo, and no fragment.
@@ -252,6 +363,7 @@ pub(crate) fn safe_field_path(path: &serde_path_to_error::Path) -> String {
         "args",
         "env",
         "temp_dir",
+        "cwd",
     ];
     let mut fields = Vec::new();
     for segment in path {
@@ -275,63 +387,38 @@ mod tests {
     use crate::core::config::Config;
     use serde_json::json;
 
-    /// Metadata fixture requires no installation or executable invocation.
-    fn package(adapter: serde_json::Value) -> crate::engines::Installed {
-        crate::engines::Installed {
-            manifest: crate::engines::Manifest {
-                schema_version: 1,
-                id: "fixture".into(),
-                version: "1".into(),
-                description: "test".into(),
-                adapter,
-                required: vec![],
-                files: vec![],
-                executables: vec![],
-                requires: vec![],
-            },
-            path: std::env::temp_dir()
-                .canonicalize()
-                .unwrap()
-                .join("search-package-fixture"),
-            lease: None,
-            source: "local".into(),
-            digest: String::new(),
-        }
+    /// Resolve one engine from an `engines` settings object.
+    fn resolve(engines: Value) -> Result<Adapter, ConfigError> {
+        let settings: EngineSettings = serde_json::from_value(engines).unwrap();
+        settings.adapter("fixture")
     }
 
     #[test]
-    fn validation_does_not_require_local_packages_or_resolve_overrides() {
+    fn validation_does_not_resolve_engines_and_open_errors_hide_values() {
         let mut config: Config = serde_json::from_value(json!({"engines":{
-            "use":["missing-package"],
-            "config":{"missing-package":{"url":"invalid-secret-url"}}
+            "use":["missing-engine"],
+            "config":{"other":{"url":"invalid-secret-url"}}
         }}))
         .unwrap();
-        config.home = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("search-validation-{}", uuid::Uuid::new_v4()));
         config.validate().unwrap();
         let mut disabled = config.clone();
         disabled.engines.enabled = false;
-        assert!(crate::engines::Pool::new(&disabled)
+        assert!(crate::core::engines::Pool::new(&disabled)
             .unwrap()
             .names()
             .is_empty());
+        config.engines.use_engines = vec!["other".into()];
         let error = crate::core::Search::open(config).err().unwrap().to_string();
-        assert!(error.contains("missing-package"));
-        assert!(error.contains("install"));
+        assert!(error.contains("engine other"), "{error}");
         assert!(!error.contains("invalid-secret-url"));
     }
 
     #[test]
-    fn selection_is_explicit_and_settings_cannot_inject_execution_adapters() {
+    fn selection_is_explicit_and_validated() {
         let defaults: Config = serde_json::from_value(json!({})).unwrap();
-        assert_eq!(
-            defaults.engines.use_engines,
-            [crate::engines::DEFAULT_ENGINE]
-        );
+        assert_eq!(defaults.engines.use_engines, [DEFAULT_ENGINE]);
         let empty: Config = serde_json::from_value(json!({"engines":{"use":[]}})).unwrap();
-        assert!(crate::engines::Pool::new(&empty)
+        assert!(crate::core::engines::Pool::new(&empty)
             .unwrap()
             .names()
             .is_empty());
@@ -351,44 +438,76 @@ mod tests {
     }
 
     #[test]
-    fn overrides_merge_shallowly_and_cannot_change_transport() {
-        let package = package(
-            json!({"type":"command", "command":"./run", "args":["literal"], "config":{"old":true}}),
-        );
-        let overrides = json!({"config":{"new":"$HOME"},"env":["FIXTURE_TOKEN"]});
-        let Adapter::Command(adapter) = resolve_adapter(&package, Some(&overrides)).unwrap() else {
-            panic!("command fixture")
+    fn preset_entries_merge_shallowly_and_cannot_change_type() {
+        let settings: EngineSettings = serde_json::from_value(json!({"config":{
+            "mwmbl":{"query_param":"query","params":{"lang":"en"}},
+            "searxng":{"type":"command","command":"tool"}
+        }}))
+        .unwrap();
+        let Adapter::Http(mwmbl) = settings.adapter("mwmbl").unwrap() else {
+            panic!("mwmbl is an HTTP preset")
         };
-        assert_eq!(adapter.cwd, package.path);
-        assert_eq!(adapter.args, ["literal"]);
-        assert_eq!(
-            adapter.config,
-            std::collections::BTreeMap::from([("new".into(), json!("$HOME"))])
-        );
-        assert_eq!(adapter.env, ["FIXTURE_TOKEN"]);
-        assert!(resolve_adapter(&package, Some(&json!({"type":"http"}))).is_err());
-        assert!(resolve_adapter(&package, Some(&json!({"cwd":"/secret"}))).is_err());
+        assert_eq!(mwmbl.query_param, "query");
+        assert_eq!(mwmbl.url, "https://api.mwmbl.org/search/");
+        assert_eq!(mwmbl.text_part_pointer.as_deref(), Some("/value"));
+        let error = settings.adapter("searxng").unwrap_err().to_string();
+        assert!(error.contains("type cannot change"), "{error}");
     }
 
     #[test]
-    fn required_setup_and_invalid_transport_errors_identify_engine_without_values() {
-        let mut package = package(json!({"type":"http","url":""}));
-        package.manifest.required = vec!["url".into()];
-        let error = resolve_adapter(&package, None).unwrap_err().to_string();
-        assert!(error.contains("engine fixture"));
-        assert!(error.contains("configure fixture url"));
-        assert!(resolve_adapter(&package, Some(&json!({"url":"https://example.com/"}))).is_ok());
-        for override_value in [
-            json!({"url":"https://user:secret@example.com/"}),
-            json!({"url":"https://example.com/","max_response_bytes":0}),
-        ] {
-            let error = resolve_adapter(&package, Some(&override_value))
+    fn missing_preset_field_names_the_configure_command() {
+        let settings = EngineSettings::default();
+        let error = settings.adapter("searxng").unwrap_err().to_string();
+        assert!(
+            error.contains("search configure searxng url URL"),
+            "{error}"
+        );
+        let settings: EngineSettings = serde_json::from_value(
+            json!({"config":{"searxng":{"url":"https://searx.example/search"}}}),
+        )
+        .unwrap();
+        assert!(settings.adapter("searxng").is_ok());
+    }
+
+    #[test]
+    fn custom_engines_need_a_complete_typed_adapter() {
+        for entry in [json!({}), json!({"url":"https://example.com/"})] {
+            let error = resolve(json!({"config":{"fixture":entry}}))
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains("engine fixture"));
-            assert!(!error.contains("secret"));
-            assert!(!error.contains("example.com"));
+            assert!(error.contains("type must be http or command"), "{error}");
         }
+        let error = resolve(json!({})).unwrap_err().to_string();
+        assert!(error.contains("not configured"), "{error}");
+        assert!(resolve(json!({"config":{"fixture":{"type":"http"}}})).is_err());
+        assert!(resolve(
+            json!({"config":{"fixture":{"type":"http","url":"https://example.com/"}}})
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn command_cwd_defaults_from_command_or_scratch() {
+        let cwd = |entry: Value| match resolve(json!({"config":{"fixture":entry}})) {
+            Ok(Adapter::Command(command)) => Ok(command.cwd.unwrap()),
+            Ok(Adapter::Http(_)) => panic!("command fixture"),
+            Err(error) => Err(error.to_string()),
+        };
+        let absolute = std::env::temp_dir().canonicalize().unwrap().join("engine");
+        assert_eq!(
+            cwd(json!({"type":"command","command":absolute})).unwrap(),
+            std::env::temp_dir().canonicalize().unwrap()
+        );
+        assert_eq!(
+            cwd(json!({"type":"command","command":"python3","temp_dir":absolute})).unwrap(),
+            absolute
+        );
+        assert_eq!(
+            cwd(json!({"type":"command","command":"python3","cwd":absolute})).unwrap(),
+            absolute
+        );
+        assert!(cwd(json!({"type":"command","command":"./run"})).is_err());
+        assert!(cwd(json!({"type":"command","command":"tool","cwd":"relative"})).is_err());
     }
 
     #[test]
@@ -408,12 +527,13 @@ mod tests {
             json!({"type":"http","url":"https://example.com/","max_response_bytes":0}),
             json!({"type":"http","url":"https://example.com/","query_param":""}),
             json!({"type":"http","url":"https://example.com/","limit_param":"q"}),
+            json!({"type":"http","url":"https://example.com/","unknown":"secret"}),
         ] {
-            let error = resolve_adapter(&package(adapter), None)
+            let error = resolve(json!({"config":{"fixture":adapter}}))
                 .unwrap_err()
                 .to_string();
-            assert!(!error.contains("secret"));
-            assert!(error.contains("engine fixture"));
+            assert!(!error.contains("secret"), "{error}");
+            assert!(error.contains("engine fixture"), "{error}");
         }
     }
 }

@@ -5,58 +5,42 @@
 //! `EngineState` beside the results, so an empty result set is never mistaken
 //! for a broken one.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::task::JoinSet;
 
-use super::{
-    Answer, Engine, EngineError, EngineState, EngineStatus, FailureCause, Link, Query, Ranked,
-};
-use crate::core::config::SearchSettings;
+use super::{Engine, EngineError, EngineState, EngineStatus, FailureCause, Found, Ranked};
+use crate::core::config::{Config, ConfigError, SearchSettings};
+use crate::core::{Answer, Link, Query};
 
-/// Owns enabled engine transports, package leases, and query bounds.
+/// Owns enabled engine transports and query bounds.
 pub struct Pool {
     engines: Vec<Arc<dyn Engine>>,
     settings: SearchSettings,
-    _leases: Vec<Arc<std::fs::File>>,
 }
 
 impl Pool {
-    /// Resolve selected trusted packages and build transports without reading credentials.
-    /// Package leases remain held for the lifetime of this pool.
-    pub fn new(
-        config: &crate::core::config::Config,
-    ) -> Result<Self, crate::core::config::ConfigError> {
+    /// Resolve each selected engine from settings and build its transport
+    /// without reading credentials or running engine code.
+    pub fn new(config: &Config) -> Result<Self, ConfigError> {
         config.validate()?;
         let mut engines: Vec<Arc<dyn Engine>> = Vec::new();
-        let mut leases = Vec::new();
         if config.engines.enabled {
             for id in &config.engines.use_engines {
-                let package = crate::engines::resolve(&config.home, id).map_err(|_| {
-                    crate::core::config::ConfigError::new(format!(
-                        "engine {id}: package unavailable; run search install {id} or disable it"
-                    ))
-                })?;
-                let settings =
-                    crate::core::config::resolve_adapter(&package, config.engines.config.get(id))?;
+                let settings = config.engines.adapter(id)?;
                 let adapter =
                     super::adapter::Adapter::new(id.clone(), settings, &config.user_agent)
                         .map_err(|_| {
-                            crate::core::config::ConfigError::new(format!(
-                                "engine {id}: custom HTTP client failed"
-                            ))
+                            ConfigError::new(format!("engine {id}: HTTP client failed"))
                         })?;
-                if let Some(lease) = package.lease {
-                    leases.push(lease);
-                }
                 engines.push(Arc::new(adapter));
             }
         }
         Ok(Self {
             engines,
             settings: config.search.clone(),
-            _leases: leases,
         })
     }
 
@@ -77,38 +61,40 @@ impl Pool {
         let selected: Vec<Arc<dyn Engine>> = self.select(&query.engines);
         let per_engine_time = self.settings.engine_timeout();
 
-        let mut set: JoinSet<(usize, EngineState, Vec<Ranked>)> = JoinSet::new();
+        let mut set: JoinSet<(EngineState, Vec<Ranked>)> = JoinSet::new();
+        let mut tasks = HashMap::new();
         for (index, engine) in selected.iter().enumerate() {
             let engine = Arc::clone(engine);
             let text = query.text.clone();
-            set.spawn(async move { run_engine(index, engine, text, limit, per_engine_time).await });
+            let task =
+                set.spawn(async move { run_engine(engine, text, limit, per_engine_time).await });
+            tasks.insert(task.id(), index);
         }
 
         // Ordered by engine index so output is stable regardless of finish order.
         let mut collected: Vec<Option<(EngineState, Vec<Ranked>)>> =
             (0..selected.len()).map(|_| None).collect();
-        let mut panicked = Vec::new();
         let completed = tokio::time::timeout(self.settings.timeout(), async {
-            while let Some(joined) = set.join_next().await {
-                match joined {
-                    // The index is produced by `enumerate` over `selected`, so it is
-                    // always in range; `get_mut` keeps that provable rather than
-                    // asserted.
-                    Ok((index, state, results)) => {
-                        if let Some(slot) = collected.get_mut(index) {
-                            *slot = Some((state, results));
-                        }
-                    }
+            while let Some(joined) = set.join_next_with_id().await {
+                let (id, outcome) = match joined {
+                    Ok((id, outcome)) => (id, Some(outcome)),
                     // A panicking engine must not take the query down; it is
-                    // reported as a failed engine beside the results.
-                    Err(_) => panicked.push(EngineState {
-                        name: "engine".into(),
-                        status: EngineStatus::Error,
-                        count: 0,
-                        error: Some("engine task failed".into()),
-                        elapsed_ms: 0,
-                    }),
-                }
+                    // reported under its own name as a failed engine.
+                    Err(error) => (error.id(), None),
+                };
+                // Task IDs map to indexes produced by `enumerate` over
+                // `selected`, so lookups succeed; `get` keeps that provable.
+                let Some(&index) = tasks.get(&id) else {
+                    continue;
+                };
+                let (Some(slot), Some(engine)) = (collected.get_mut(index), selected.get(index))
+                else {
+                    continue;
+                };
+                *slot = Some(outcome.unwrap_or_else(|| {
+                    let state = failed(engine.name(), EngineStatus::Error, "engine task failed", 0);
+                    (state, Vec::new())
+                }));
             }
         })
         .await
@@ -120,16 +106,13 @@ impl Pool {
             for (index, engine) in selected.iter().enumerate() {
                 if let Some(slot) = collected.get_mut(index) {
                     if slot.is_none() {
-                        *slot = Some((
-                            EngineState {
-                                name: engine.name().into(),
-                                status: EngineStatus::Timeout,
-                                count: 0,
-                                error: Some("engine exceeded the overall search deadline".into()),
-                                elapsed_ms: started.elapsed().as_millis() as u64,
-                            },
-                            Vec::new(),
-                        ));
+                        let state = failed(
+                            engine.name(),
+                            EngineStatus::Timeout,
+                            "engine exceeded the overall search deadline",
+                            started.elapsed().as_millis() as u64,
+                        );
+                        *slot = Some((state, Vec::new()));
                     }
                 }
             }
@@ -146,13 +129,7 @@ impl Pool {
             })
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
-            .map(|name| EngineState {
-                name: name.clone(),
-                status: EngineStatus::Error,
-                count: 0,
-                error: Some("engine is not enabled".into()),
-                elapsed_ms: 0,
-            })
+            .map(|name| failed(name, EngineStatus::Error, "engine is not enabled", 0))
             .collect();
         let mut merged = Vec::new();
         for slot in collected.into_iter().flatten() {
@@ -160,7 +137,6 @@ impl Pool {
             states.push(state);
             merged.extend(results);
         }
-        states.extend(panicked);
         states.sort_by(|a, b| a.name.cmp(&b.name));
 
         let results = fuse(&merged, limit);
@@ -187,34 +163,45 @@ impl Pool {
     }
 }
 
+/// The state of an engine that produced no results.
+fn failed(name: &str, status: EngineStatus, error: &str, elapsed_ms: u64) -> EngineState {
+    EngineState {
+        name: name.into(),
+        status,
+        count: 0,
+        skipped: 0,
+        error: Some(error.into()),
+        elapsed_ms,
+    }
+}
+
 /// Run one engine under its deadline and classify the outcome. Each result is
 /// stamped with its rank in this engine's own ordering, which is what fusion
 /// scores on — an engine's rank-1 must count as rank-1 no matter where its
 /// results land in the merged concatenation.
 async fn run_engine(
-    index: usize,
     engine: Arc<dyn Engine>,
     query: String,
     limit: usize,
     budget: Duration,
-) -> (usize, EngineState, Vec<Ranked>) {
+) -> (EngineState, Vec<Ranked>) {
     let name = engine.name().to_string();
     let started = Instant::now();
     let outcome = tokio::time::timeout(budget, engine.search(query, limit)).await;
     let elapsed_ms = started.elapsed().as_millis() as u64;
 
-    let (status, links, error) = match outcome {
-        Ok(Ok(results)) => (EngineStatus::Ok, results, None),
+    let (status, Found { links, skipped }, error) = match outcome {
+        Ok(Ok(found)) => (EngineStatus::Ok, found, None),
         Ok(Err(error)) => {
             let status = match error.cause {
                 FailureCause::Timeout => EngineStatus::Timeout,
                 _ => EngineStatus::Error,
             };
-            (status, Vec::new(), Some(error.message))
+            (status, Found::default(), Some(error.message))
         }
         Err(_) => (
             EngineStatus::Timeout,
-            Vec::new(),
+            Found::default(),
             Some(EngineError::network("engine exceeded its deadline").message),
         ),
     };
@@ -223,17 +210,21 @@ async fn run_engine(
     let results: Vec<Ranked> = links
         .into_iter()
         .enumerate()
-        .map(|(rank, link)| Ranked::engine(link, rank + 1))
+        .map(|(rank, link)| Ranked {
+            link,
+            rank: rank + 1,
+        })
         .collect();
 
     let state = EngineState {
         name,
         status,
         count: results.len(),
+        skipped,
         error,
         elapsed_ms,
     };
-    (index, state, results)
+    (state, results)
 }
 
 /// Merge engine answers with reciprocal-rank fusion: each engine votes
@@ -308,7 +299,8 @@ fn fuse(results: &[Ranked], limit: usize) -> Vec<Link> {
 }
 
 /// Normalize a URL for deduplication: lowercased scheme and host, no fragment,
-/// no tracking parameters, no trailing slash. It never drops a meaningful query.
+/// no tracking parameters, no trailing slash. It never drops a meaningful query:
+/// `ref` stays, because it selects a branch or tag on code hosts.
 pub(super) fn normalize_url(raw: &str) -> String {
     let Ok(mut url) = url::Url::parse(raw.trim()) else {
         return String::new();
@@ -327,7 +319,6 @@ pub(super) fn normalize_url(raw: &str) -> String {
         "utm_campaign",
         "utm_term",
         "utm_content",
-        "ref",
         "fbclid",
         "gclid",
         "mc_cid",
@@ -355,8 +346,8 @@ pub(super) fn normalize_url(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     impl Pool {
-        /// Build fixture transports without bypassing package resolution in production.
-        pub(in crate::engines) fn from_adapters(
+        /// Build fixture transports without going through settings resolution.
+        pub(in crate::core::engines) fn from_adapters(
             adapters: Vec<(&str, crate::core::config::Adapter)>,
             settings: SearchSettings,
         ) -> Self {
@@ -365,7 +356,7 @@ mod tests {
                     .into_iter()
                     .map(|(name, settings)| {
                         Arc::new(
-                            crate::engines::adapter::Adapter::new(
+                            crate::core::engines::adapter::Adapter::new(
                                 name.into(),
                                 settings,
                                 "search-test",
@@ -375,7 +366,6 @@ mod tests {
                     })
                     .collect(),
                 settings,
-                _leases: Vec::new(),
             }
         }
     }
@@ -400,15 +390,18 @@ mod tests {
             let count = self.count;
             Box::pin(async move {
                 tokio::time::sleep(delay).await;
-                Ok((0..count)
-                    .map(|i| Link {
-                        title: format!("result {i}"),
-                        url: format!("https://example.com/{i}"),
-                        snippet: None,
-                        engines: vec!["test".into()],
-                        score: 0.0,
-                    })
-                    .collect())
+                Ok(Found {
+                    links: (0..count)
+                        .map(|i| Link {
+                            title: format!("result {i}"),
+                            url: format!("https://example.com/{i}"),
+                            snippet: None,
+                            engines: vec!["test".into()],
+                            score: 0.0,
+                        })
+                        .collect(),
+                    skipped: 0,
+                })
             })
         }
     }
@@ -416,9 +409,39 @@ mod tests {
     fn pool(engine: TestEngine, settings: SearchSettings) -> Pool {
         Pool {
             engines: vec![Arc::new(engine)],
-            _leases: Vec::new(),
             settings,
         }
+    }
+
+    struct PanickingEngine;
+
+    impl Engine for PanickingEngine {
+        fn name(&self) -> &str {
+            "fragile"
+        }
+
+        fn search(&self, _query: String, _limit: usize) -> super::super::EngineFuture {
+            Box::pin(async { panic!("engine bug") })
+        }
+    }
+
+    /// A panicking engine is reported under its own name, beside healthy engines.
+    #[tokio::test]
+    async fn panicking_engine_is_reported_by_name() {
+        let mut pool = pool(
+            TestEngine {
+                limit: Arc::new(AtomicUsize::new(0)),
+                delay: Duration::ZERO,
+                count: 1,
+            },
+            SearchSettings::default(),
+        );
+        pool.engines.push(Arc::new(PanickingEngine));
+        let answer = pool.search(Query::default()).await;
+        assert_eq!(answer.results.len(), 1);
+        let fragile = answer.engines.iter().find(|e| e.name == "fragile").unwrap();
+        assert_eq!(fragile.status, EngineStatus::Error);
+        assert_eq!(fragile.error.as_deref(), Some("engine task failed"));
     }
 
     #[tokio::test]
@@ -622,5 +645,9 @@ mod tests {
             normalize_url("https://example.com/Path?id=7")
         );
         assert!(normalize_url("javascript:alert(1)").is_empty());
+        assert_ne!(
+            normalize_url("https://github.com/o/r/blob/x?ref=main"),
+            normalize_url("https://github.com/o/r/blob/x?ref=dev")
+        );
     }
 }

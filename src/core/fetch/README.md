@@ -5,10 +5,10 @@ reporting failures without panicking. It does not store a persistent corpus.
 
 | File or directory | Responsibility |
 | --- | --- |
-| `mod.rs` | HTTP client, body/concurrency limits, redirect handling, and ordered batches |
+| `mod.rs` | HTTP client, byte/concurrency limits, content-type policy, charset decoding, redirects, and ordered batches |
 | `guard.rs` | SSRF address classification, hostname checks, and connect-time DNS validation |
 | `cache.rs` | Byte- and count-bounded, in-memory TTL cache |
-| `extract/mod.rs` | Main-content extraction, cleaned fallback, metadata, and redirect detection |
+| `extract/mod.rs` | Main-content extraction, cleaned fallback, metadata, meta-refresh detection, and PDF text |
 | `extract/visibility.rs` | Hidden-content and boilerplate filtering |
 | `extract/serialize.rs` | Whitespace normalization and link/image neutralization |
 
@@ -19,13 +19,15 @@ dialing; the guarded resolver rechecks DNS answers at connection time. Literal
 redirect addresses also require validation. Environment proxies are disabled.
 Never weaken private/metadata address classification to make a website work.
 
-Client-side redirect targets are parsed from page content, not executed as script.
-Every followed target returns through the guard, with bounded hops. Explicit
-`allow_private_networks` is an operator override, not a property of page content.
+Only prompt `<meta http-equiv="refresh">` targets are followed; scripts are never
+executed or mined for URLs. Every followed target returns through the guard, with
+bounded hops. Explicit `allow_private_networks` is an operator override, not a
+property of page content.
 
 Only successful pages enter the transient cache. Zero TTL or byte budget disables
 storage; oversized pages bypass it. Full caches clear rather than growing without
-bound. Passage selection is separate from retrieval in `core::text`.
+bound. Text is never truncated during extraction: the byte bound limits work,
+and `core::text::focus` applies a reader's query, character window and offset.
 
 Extraction runs off the async executor. Preserve literal text such as
 `values[index]` while neutralizing Markdown link/image targets. Filtering is

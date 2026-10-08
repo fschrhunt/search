@@ -12,8 +12,9 @@ pub const DEFAULT_ENGINE_SECS: u64 = 5;
 pub const DEFAULT_OVERALL_SECS: u64 = 8;
 /// Seconds a fetched page is reused from memory.
 pub const DEFAULT_FETCH_CACHE_SECS: u64 = 600;
-/// The most bytes read from one response.
-pub const DEFAULT_MAX_BYTES: u64 = 4 << 20;
+/// The most bytes read from one response: a memory and work bound, not a
+/// content budget. Large documentation and encyclopedia pages exceed 1 MiB.
+pub const DEFAULT_MAX_BYTES: u64 = 16 << 20;
 /// Redirects followed.
 pub const DEFAULT_MAX_REDIRECTS: usize = 5;
 /// Fetches in flight at once.
@@ -50,7 +51,7 @@ impl Default for EngineSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            use_engines: vec![crate::engines::DEFAULT_ENGINE.into()],
+            use_engines: vec![super::DEFAULT_ENGINE.into()],
             config: Default::default(),
         }
     }

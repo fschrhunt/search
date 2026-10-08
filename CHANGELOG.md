@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+- Failed fetches keep the HTTP status in their per-URL result (`status: 404`
+  rather than `0`) in JSON and MCP output; `0` means no HTTP response.
+- `search fetch -json` exits 1 when any URL fails, as text mode already did. The
+  per-URL `error` stays in the JSON output.
+- **Read whole pages.** Extraction no longer cuts raw HTML at 120,000 characters,
+  which lost the article on large pages (Wikipedia returned its contents list,
+  GitHub its "Skip to content" link) without reporting truncation. Readability
+  no longer gives up past 40,000 elements. `fetch.max_response_bytes` (now 16 MiB)
+  bounds the download only; a body cut there reports `truncated`.
+- Articles are returned as Markdown: headings, lists, tables and fenced code
+  keep their structure, and code keeps its indentation and literal brackets
+  (`vec![1]`, `#![allow(...)]`). Listing pages fall back to plain text without
+  navigation, sidebars, site header/footer or scripts, and keep their `<title>`.
+- Decode pages from their declared charset (header or `<meta>`) instead of
+  forcing UTF-8, so Shift_JIS, GBK, windows-1252 and similar pages read correctly.
+- Read PDF text layers. Refuse images, archives and other binaries by content
+  type instead of returning them as replacement-character noise; text types
+  (JSON, XML, source, plain text) are returned as text.
+- Follow only prompt `<meta http-equiv="refresh">` redirects. Search no longer
+  guesses redirects from scripts or lone links, which replaced error pages with
+  their "Go home" target and app shells with an arbitrary URL from their scripts.
+- Stop removing visible content: hidden-text and boilerplate filters match whole
+  class tokens and segments and parse inline styles, so `overflow-hidden`,
+  `lead-paragraph`, negative margins and responsive `hidden md:block` content are
+  kept, and a furniture-named wrapper never removes the article inside it.
+- Fix the image exfiltration guard: images nested in links (the README badge
+  pattern `[![alt](img)](link)`) and inside brackets survived extraction. Image
+  syntax is now neutralized everywhere, and link reference definitions are broken
+  so reference-style images cannot resolve.
+- Read pages in windows without losing anything: `web_fetch` and `search fetch`
+  return `next_offset` when a page continues past `max_characters`, and accept
+  `offset` (`-offset`) to read on. The 40,000-character ceiling on
+  `max_characters` is removed. Focused passages match whole words (`is` no longer
+  matches `this`), match inside CJK text, and are returned in reading order. The
+  CLI and MCP share one implementation, `core::text::focus`.
+- The paired HTTPS host has one JSON API. `POST /v1/execute` is removed; paired
+  CLI and stdio MCP clients use `GET /v1/search`, `POST /v1/fetch` and
+  `GET /v1/status`. `POST /v1/fetch` returns `{"pages":[...]}` in input order.
+- An omitted `limit` on `GET /v1/search` and MCP `web_search` uses the host's
+  `search.max_results` instead of a fixed 10; requests stay capped at 50.
+- CLI, MCP and HTTP share one set of input bounds (1–512-byte queries, 1–10 URLs
+  of at most 8192 bytes). Local `search fetch` now refuses more than 10 URLs.
+- **Breaking:** engines are defined in settings instead of installed packages.
+  `engines.use` selects IDs; `engines.config.ID` overrides the built-in `mwmbl`
+  and `searxng` presets or defines a custom `http`/`command` adapter. Settings are
+  trusted operator configuration: a command entry runs that program. Command
+  engines take an absolute `command` or a bare name on `PATH`, and an optional
+  absolute `cwd` (default: the command's directory, else its private scratch
+  directory). Remove `search install`, `update`, `remove`, `engines available`,
+  `enable --trust`, and the package store (`SEARCH_HOME/engines`), manifests,
+  receipts and leases; a running agent no longer blocks engine changes. To keep a
+  custom package, move its manifest `adapter` into `engines.config.ID`.
+- Engine commands are `search engines [list]`, `configure`, `enable`, `disable`
+  and `test`; `test` prints results like a search (`-json` for JSON).
+- **Breaking Rust API:** the engine runtime moved to `search::core::engines`;
+  `Query`, `Answer` and `Link` are defined in `search::core`, removing the
+  core↔engines dependency cycle. The `Engine` trait returns `Found`.
+- One invalid result row (such as an empty Mwmbl title) no longer fails the whole
+  engine: invalid rows are skipped and reported as `skipped` in engine status.
+- URL deduplication keeps the `ref` query parameter, which selects branches on
+  code hosts. A panicking engine is reported under its own name.
+- A leading `-config PATH` applies to the command that follows
+  (`search -config PATH fetch URL`).
 - Add native x86_64/ARM64 CI and release builds for Linux, macOS, and Windows;
   publish Windows ZIPs and a checksummed PowerShell installer, and test installers
   on their native systems. Use runner-local temporary paths for security tests.

@@ -15,8 +15,8 @@ Search runs on a private machine and is reached over a private network, but it
 treats every URL and every page as hostile regardless. These are the properties
 worth attacking:
 
-The fetch guard lives in `src/core/fetch/guard.rs`, package trust in
-`src/engines/`, and hosting identity/authentication in `src/cli/auth.rs`.
+The fetch guard lives in `src/core/fetch/guard.rs`, engine transports in
+`src/core/engines/`, and hosting identity/authentication in `src/cli/auth.rs`.
 Root `src/lib.rs` applies the production panic-site deny policy across modules.
 
 - **The fetcher reaches only public addresses.** Loopback, RFC1918, link-local
@@ -29,11 +29,11 @@ Root `src/lib.rs` applies the production panic-site deny policy across modules.
 - **Untrusted HTML cannot crash the service or exhaust it.** A panic, an
   unbounded allocation, or an infinite loop driven by a fetched page is a
   vulnerability.
-- **Engine packages are explicitly trusted locally.** A remote execution request
-  must not install programs, change manifests, or configure the host. Package
-  installation must not escape the Search home through traversal or symlinks;
-  metadata inspection must not execute code. HTTP engines must enforce their
-  configured host/DNS guard, independent of page-fetching permissions.
+- **Engines are trusted local settings.** A remote execution request must not
+  define engines, run programs not configured by the operator, or change host
+  settings. Listing and configuring engines must not execute code. HTTP engines
+  must enforce their configured host/DNS guard, independent of page-fetching
+  permissions.
 
 ## What is not a vulnerability
 

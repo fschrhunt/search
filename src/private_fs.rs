@@ -1,5 +1,7 @@
 //! Windows private storage: protected user DACLs, handle validation and pinned no-reparse walks.
 //! Administrative principals are trusted only for ancestors, never for private file access.
+//! Callers: command-engine scratch directories (`mkdir`, `trusted_ancestors`) and,
+//! with the `cli` feature, trust storage and settings writes.
 use std::{
     ffi::c_void,
     fs::{File, Metadata},
@@ -20,7 +22,7 @@ use windows_sys::Win32::{
     System::{Threading::*, WindowsProgramming::DRIVE_REMOTE},
 };
 
-/// Storage boundaries distinguish private data, shareable settings and trusted ancestors.
+/// Storage boundaries distinguish private data, operator settings and trusted ancestors.
 #[derive(Clone, Copy)]
 pub(crate) enum Boundary {
     Private,
@@ -111,7 +113,7 @@ fn wide(path: &Path) -> Result<Vec<u16>, String> {
 }
 
 /// Include junctions and other reparse tags, not just symbolic links.
-pub(crate) fn reparse(meta: &Metadata) -> bool {
+fn reparse(meta: &Metadata) -> bool {
     meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
@@ -221,7 +223,7 @@ fn administrator(sid: PSID) -> Result<bool, String> {
 }
 
 /// Validate owner and every effective allow ACE; unknown ACE forms fail closed.
-pub(crate) fn check(file: &File, directory: bool, boundary: Boundary) -> Result<(), String> {
+fn check(file: &File, directory: bool, boundary: Boundary) -> Result<(), String> {
     let meta = file.metadata().map_err(|e| e.to_string())?;
     if reparse(&meta) || (directory && !meta.is_dir()) || (!directory && !meta.is_file()) {
         return Err("private storage must be a real directory or regular file".into());
@@ -460,13 +462,8 @@ pub(crate) fn trusted_ancestors(path: &Path) -> Result<(), String> {
     parents(&probe, true, true).map(|_| ())
 }
 
-/// Open a source file without following any reparse point, pinning ancestors through open.
-pub(crate) fn read(path: &Path) -> Result<File, String> {
-    let _pins = parents(path, false, false)?;
-    raw(path, GENERIC_READ, OPEN_EXISTING, None, false)
-}
-
 /// Open or securely create a private file, checking the resulting handle before returning it.
+#[cfg(feature = "cli")]
 pub(crate) fn open(
     path: &Path,
     write: bool,
@@ -498,6 +495,7 @@ pub(crate) fn open(
 }
 
 /// Inspect a private object by its no-follow handle, never by pathname ACL lookup.
+#[cfg(feature = "cli")]
 pub(crate) fn private(path: &Path, directory: bool, boundary: Boundary) -> Result<(), String> {
     let _pins = parents(path, true, false)?;
     let file = raw(
@@ -620,10 +618,11 @@ pub(crate) fn replace(temp: &Path, path: &Path) -> Result<(), String> {
     Err("private file replacement retry limit exceeded".into())
 }
 
+// Every fixture here creates or inspects storage through the CLI-only primitives.
 #[cfg(test)]
+#[cfg(feature = "cli")]
 mod tests {
     use super::*;
-    #[cfg(feature = "cli")]
     use std::io::Write;
 
     /// Each security test owns a protected directory on the runner's local filesystem.
@@ -698,7 +697,7 @@ mod tests {
         }
     }
 
-    /// Public reads and writes are refused for credentials; shareable settings permit reads alone.
+    /// Public reads and writes are refused for credentials; settings files permit public reads alone.
     #[test]
     fn protected_owner_acl_is_created_and_public_grants_fail_closed() {
         let temp = Temp::new();
@@ -709,7 +708,6 @@ mod tests {
             dacl(&path, grant, true);
             assert!(check(&file, false, Boundary::Private).is_err());
             assert!(private(&path, false, Boundary::Private).is_err());
-            #[cfg(feature = "cli")]
             if grant.contains("FR") {
                 check(&file, false, Boundary::Settings).unwrap();
             } else {
@@ -773,7 +771,6 @@ mod tests {
     }
 
     /// Existing locks can be reopened, and synced replacement keeps the private ACL.
-    #[cfg(feature = "cli")]
     #[test]
     fn locks_and_replacement_work_with_live_windows_handles() {
         let temp = Temp::new();
@@ -818,7 +815,6 @@ mod tests {
     }
 
     /// A short-lived reader pin must not make an otherwise serialized update fail.
-    #[cfg(feature = "cli")]
     #[test]
     fn replacement_waits_for_a_transient_reader_pin() {
         let temp = Temp::new();
@@ -841,7 +837,6 @@ mod tests {
     }
 
     /// Replacement's write-sharing exception requires an owner-only parent DACL.
-    #[cfg(feature = "cli")]
     #[test]
     fn replacement_rejects_a_shareable_parent() {
         let temp = Temp::new();
@@ -923,7 +918,7 @@ mod tests {
         let child = target.join("child");
         let file = open(&child, true, true, false, Boundary::Private).unwrap();
         drop(file);
-        drop(read(&child).unwrap());
+        drop(open(&child, false, false, false, Boundary::Private).unwrap());
         std::fs::remove_file(&child).unwrap();
         drop(pins);
         std::fs::rename(&target, temp.0.join("moved")).unwrap();

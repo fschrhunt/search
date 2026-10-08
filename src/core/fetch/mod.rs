@@ -46,6 +46,7 @@ pub struct Page {
     pub fetched_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_url: Option<String>,
+    /// The HTTP status, or 0 when no HTTP response was received.
     pub status: u16,
     pub content_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,9 +81,20 @@ pub enum FetchError {
     Status(u16),
     /// The response carried no readable text.
     Empty,
+    /// The body is a type Search cannot read as text, such as an image or archive.
+    Unsupported(String),
 }
 
 impl FetchError {
+    /// The HTTP status the failure carries, or 0 when no response was received.
+    pub fn status(&self) -> u16 {
+        match self {
+            FetchError::Status(code) => *code,
+            _ => 0,
+        }
+    }
+
+    /// The caller-facing reason, without the URL, for text and JSON output.
     pub fn message(&self) -> String {
         match self {
             FetchError::Scheme => "only http and https URLs are supported".into(),
@@ -90,6 +102,7 @@ impl FetchError {
             FetchError::Network(reason) => reason.clone(),
             FetchError::Status(code) => format!("HTTP {code}"),
             FetchError::Empty => "no readable text in response".into(),
+            FetchError::Unsupported(reason) => reason.clone(),
         }
     }
 }
@@ -99,7 +112,7 @@ pub struct Fetcher {
     settings: FetchSettings,
     client: reqwest::Client,
     cache: cache::Cache,
-    permits: tokio::sync::Semaphore,
+    permits: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl Fetcher {
@@ -132,7 +145,8 @@ impl Fetcher {
             ))
             .pool_idle_timeout(Duration::from_secs(30))
             .build()?;
-        let permits = tokio::sync::Semaphore::new(settings.max_concurrency.max(1));
+        let permits =
+            std::sync::Arc::new(tokio::sync::Semaphore::new(settings.max_concurrency.max(1)));
         let cache = cache::Cache::new(settings.cache_ttl(), settings.cache_bytes);
         Ok(Fetcher {
             settings,
@@ -192,9 +206,10 @@ impl Fetcher {
             return Ok(cached);
         }
 
-        let _permit = self
+        let permit = self
             .permits
-            .acquire()
+            .clone()
+            .acquire_owned()
             .await
             .map_err(|_| FetchError::Network("fetcher is shutting down".into()))?;
 
@@ -222,27 +237,33 @@ impl Fetcher {
             .map_err(FetchError::Network)?;
 
         // Extraction is CPU-bound and its types are not `Send`, so it runs on a
-        // blocking thread with the body moved in and a plain `Page` returned.
-        let (page, final_url) = if is_html(&content_type) {
-            let url_for_links = final_url.clone();
-            let page = tokio::task::spawn_blocking(move || extract::read(&body, &url_for_links))
-                .await
-                .map_err(|e| FetchError::Network(format!("extraction task failed: {e}")))?;
-            (page, final_url)
-        } else {
-            let text = extract::sanitize(body.as_bytes());
-            (
-                extract::Page {
-                    title: String::new(),
-                    byline: None,
-                    published: None,
-                    site: None,
-                    text,
-                    redirect: None,
-                },
-                final_url,
-            )
-        };
+        // blocking thread with the body moved in and a plain `Page` returned. The
+        // caller waits at most `fetch.timeout` for it, so a pathological document
+        // cannot hold a fetch open. The concurrency permit moves into the thread,
+        // so an abandoned extraction keeps its slot until it actually finishes.
+        let kind = body_kind(&content_type, &body)?;
+        if kind == Kind::Pdf && truncated {
+            return Err(FetchError::Unsupported(
+                "PDF larger than fetch.max_response_bytes".into(),
+            ));
+        }
+        let base = final_url.clone();
+        let declared = content_type.clone();
+        let page = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            match kind {
+                Kind::Html => Ok(extract::read(&decode(&body, &declared, true), &base)),
+                Kind::Text => Ok(extract::Page::text(extract::sanitize(&decode(
+                    &body, &declared, false,
+                )))),
+                Kind::Pdf => extract::pdf(&body).map(extract::Page::text),
+            }
+        });
+        let page = tokio::time::timeout(self.settings.timeout(), page)
+            .await
+            .map_err(|_| FetchError::Network("extraction timed out".into()))?
+            .map_err(|_| FetchError::Network("extraction failed".into()))?
+            .map_err(FetchError::Unsupported)?;
         if page.text.trim().is_empty() {
             return Err(FetchError::Empty);
         }
@@ -284,7 +305,7 @@ impl Fetcher {
                     url: url.clone(),
                     fetched_at: None,
                     final_url: None,
-                    status: 0,
+                    status: error.status(),
                     content_type: String::new(),
                     title: None,
                     byline: None,
@@ -320,23 +341,23 @@ fn check_redirect(
 }
 
 /// Read a response body up to `max` bytes, reporting whether more remained.
-async fn read_capped(response: reqwest::Response, max: u64) -> Result<(String, bool), String> {
+/// The bytes are returned undecoded: the charset and content kind decide how
+/// they become text.
+async fn read_capped(response: reqwest::Response, max: u64) -> Result<(Vec<u8>, bool), String> {
     use futures::StreamExt;
     let mut stream = response.bytes_stream();
     let mut collected: Vec<u8> = Vec::new();
-    let mut total: u64 = 0;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("body failed: {e}"))?;
-        let remaining = max.saturating_sub(total);
+        let remaining = max.saturating_sub(collected.len() as u64);
         if chunk.len() as u64 > remaining {
             let take = remaining as usize;
             collected.extend_from_slice(chunk.get(..take).unwrap_or(&chunk));
-            return Ok((extract::sanitize(&collected), true));
+            return Ok((collected, true));
         }
         collected.extend_from_slice(&chunk);
-        total += chunk.len() as u64;
     }
-    Ok((extract::sanitize(&collected), false))
+    Ok((collected, false))
 }
 
 /// Turn a transport error into a concise message that does not leak the URL.
@@ -361,9 +382,135 @@ fn classify(error: &reqwest::Error) -> String {
     }
 }
 
-fn is_html(content_type: &str) -> bool {
-    let ct = content_type.to_ascii_lowercase();
-    ct.contains("html") || ct.contains("xhtml")
+/// How a response body is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Html,
+    Text,
+    Pdf,
+}
+
+/// Decide how to read a body from its declared media type, sniffing the bytes
+/// when the server declares nothing useful or mislabels a PDF. Images, archives,
+/// media and other binaries are refused by type rather than returned as noise.
+fn body_kind(content_type: &str, body: &[u8]) -> Result<Kind, FetchError> {
+    if body.starts_with(b"%PDF-") {
+        return Ok(Kind::Pdf);
+    }
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    match essence.as_str() {
+        "text/html" | "application/xhtml+xml" => Ok(Kind::Html),
+        "application/pdf" => Ok(Kind::Pdf),
+        "" | "application/octet-stream" | "binary/octet-stream" | "application/unknown" => {
+            sniff(body)
+        }
+        textual
+            if textual.starts_with("text/")
+                || textual.ends_with("+json")
+                || textual.ends_with("+xml")
+                || matches!(
+                    textual,
+                    "application/json"
+                        | "application/xml"
+                        | "application/javascript"
+                        | "application/x-javascript"
+                        | "application/ecmascript"
+                        | "application/yaml"
+                        | "application/x-yaml"
+                        | "application/toml"
+                        | "application/x-sh"
+                        | "application/sql"
+                        | "application/x-ndjson"
+                ) =>
+        {
+            Ok(Kind::Text)
+        }
+        other => Err(FetchError::Unsupported(format!(
+            "unsupported content type {other}; Search reads HTML, text and PDF"
+        ))),
+    }
+}
+
+/// Classify an undeclared body: markup that opens like HTML is HTML, bytes
+/// without NULs are text, and anything else is an unreadable binary.
+fn sniff(body: &[u8]) -> Result<Kind, FetchError> {
+    let head = body.get(..body.len().min(4096)).unwrap_or(body);
+    let lowered = String::from_utf8_lossy(head).to_ascii_lowercase();
+    let opening = lowered.trim_start_matches('\u{feff}').trim_start();
+    if opening.starts_with("<!doctype html")
+        || opening.starts_with("<html")
+        || lowered.contains("<body")
+    {
+        return Ok(Kind::Html);
+    }
+    if head.contains(&0) {
+        return Err(FetchError::Unsupported(
+            "unsupported binary content; Search reads HTML, text and PDF".into(),
+        ));
+    }
+    Ok(Kind::Text)
+}
+
+/// Decode a body using its byte-order mark, the declared `charset`, or for HTML
+/// a `<meta>` charset near the start of the document, defaulting to UTF-8.
+/// Undecodable bytes become replacement characters rather than errors.
+fn decode(body: &[u8], content_type: &str, html: bool) -> String {
+    let label =
+        charset_param(content_type).or_else(|| if html { meta_charset(body) } else { None });
+    let encoding = label
+        .and_then(|label| encoding_rs::Encoding::for_label(label.trim().as_bytes()))
+        // A document cannot declare itself UTF-16 from inside its own text;
+        // only a byte-order mark selects it, which `decode` honors below.
+        .filter(|encoding| *encoding != encoding_rs::UTF_16LE && *encoding != encoding_rs::UTF_16BE)
+        .unwrap_or(encoding_rs::UTF_8);
+    let (text, _, _) = encoding.decode(body);
+    text.into_owned()
+}
+
+/// The `charset` parameter of a Content-Type header, if any.
+fn charset_param(content_type: &str) -> Option<String> {
+    content_type.split(';').skip(1).find_map(|parameter| {
+        let (name, value) = parameter.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("charset")
+            .then(|| value.trim().trim_matches(['"', '\'']).to_string())
+    })
+}
+
+/// The charset an HTML document declares in a `<meta charset>` or
+/// `<meta http-equiv="Content-Type" content="...; charset=...">` tag within its
+/// first 4 KiB, the prescan window browsers use (with some slack).
+fn meta_charset(body: &[u8]) -> Option<String> {
+    let head = body.get(..body.len().min(4096)).unwrap_or(body);
+    let lowered = String::from_utf8_lossy(head).to_ascii_lowercase();
+    let mut rest = lowered.as_str();
+    while let Some(start) = rest.find("<meta") {
+        let tag = rest.get(start..)?;
+        let end = tag.find('>').unwrap_or(tag.len());
+        let attributes = tag.get(..end)?;
+        if let Some(at) = attributes.find("charset") {
+            let value = attributes
+                .get(at + "charset".len()..)?
+                .trim_start()
+                .strip_prefix('=')?
+                .trim_start()
+                .trim_start_matches(['"', '\'']);
+            let label: String = value
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
+                .collect();
+            if !label.is_empty() {
+                return Some(label);
+            }
+        }
+        rest = tag.get(end..)?;
+    }
+    None
 }
 
 fn now_unix() -> i64 {
@@ -542,5 +689,243 @@ mod tests {
             .fetch(&format!("http://127.0.0.1:{port}/hop1"))
             .await
             .is_err());
+    }
+
+    /// A failed HTTP response keeps its status in the per-URL result, so a machine can
+    /// tell a 404 from a request that never got a response.
+    #[tokio::test]
+    async fn failed_http_status_is_kept_per_url() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut chunk = [0u8; 1024];
+                let _ = socket.read(&mut chunk).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+            }
+        });
+        let pages = local_fetcher(DEFAULT_TEST_BYTES)
+            .fetch_many(&[format!("http://127.0.0.1:{port}/missing")])
+            .await;
+        assert_eq!(pages[0].status, 404);
+        assert_eq!(pages[0].error.as_deref(), Some("HTTP 404"));
+    }
+
+    /// Serve fixed `(path, content type, body)` responses on a loopback port.
+    async fn serve(routes: Vec<(&'static str, &'static str, Vec<u8>)>) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let routes = std::sync::Arc::new(routes);
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let routes = std::sync::Arc::clone(&routes);
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => request.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&request);
+                    let path = request.split_whitespace().nth(1).unwrap_or("/");
+                    let (_, content_type, body) =
+                        routes.iter().find(|(route, _, _)| *route == path).unwrap();
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(body).await;
+                });
+            }
+        });
+        port
+    }
+
+    fn local_fetcher(max_response_bytes: u64) -> Fetcher {
+        let settings = FetchSettings {
+            allow_private_networks: true,
+            max_response_bytes,
+            ..FetchSettings::default()
+        };
+        Fetcher::new(settings, "search-test").unwrap()
+    }
+
+    fn article(marker: &str) -> String {
+        format!(
+            "<article><h1>Ownership</h1>{}</article>",
+            (0..6)
+                .map(|i| format!(
+                    "<p>{marker} paragraph {i}: the borrow checker tracks ownership, \
+                     moves and borrows at compile time, so memory safety costs nothing at runtime.</p>"
+                ))
+                .collect::<String>()
+        )
+    }
+
+    /// Modern pages carry hundreds of kilobytes of inline script and style
+    /// before the article. The whole article must survive, untruncated.
+    #[tokio::test]
+    async fn an_article_after_a_large_head_is_read_whole() {
+        let script = format!("<script>var bundle = '{}';</script>", "x".repeat(400_000));
+        let html = format!(
+            "<html><head><title>Big</title>{script}</head><body>{}</body></html>",
+            article("LATE")
+        );
+        let port = serve(vec![(
+            "/big",
+            "text/html; charset=utf-8",
+            html.into_bytes(),
+        )])
+        .await;
+        let page = local_fetcher(DEFAULT_TEST_BYTES)
+            .fetch(&format!("http://127.0.0.1:{port}/big"))
+            .await
+            .unwrap();
+        assert!(page.text.contains("LATE paragraph 5"), "{}", page.text);
+        assert!(!page.text.contains("bundle"));
+        assert_eq!(page.truncated, None);
+    }
+
+    const DEFAULT_TEST_BYTES: u64 = 16 << 20;
+
+    /// A body beyond the byte bound is reported as truncated, not passed off as whole.
+    #[tokio::test]
+    async fn the_byte_bound_reports_truncation() {
+        let text = "line of plain text\n".repeat(1000);
+        let port = serve(vec![("/long.txt", "text/plain", text.into_bytes())]).await;
+        let page = local_fetcher(1000)
+            .fetch(&format!("http://127.0.0.1:{port}/long.txt"))
+            .await
+            .unwrap();
+        assert_eq!(page.truncated, Some(true));
+        assert!(page.text.chars().count() <= 1000);
+    }
+
+    /// Legacy encodings are decoded from the header or the document's own meta tag.
+    #[tokio::test]
+    async fn declared_charsets_are_decoded() {
+        let sentence = "私はその人を常に先生と呼んでいた。だからここでもただ先生と書くだけで本名は打ち明けない。";
+        let html = format!(
+            "<html><head><meta http-equiv=\"Content-Type\" content=\"text/html;charset=Shift_JIS\">\
+             <title>こころ</title></head><body><article>{}</article></body></html>",
+            format!("<p>{sentence}</p>").repeat(6)
+        );
+        let (shift_jis, _, _) = encoding_rs::SHIFT_JIS.encode(&html);
+        let (latin, _, _) = encoding_rs::WINDOWS_1252.encode("<p>Café crème brûlée</p>");
+        let port = serve(vec![
+            ("/sjis", "text/html", shift_jis.into_owned()),
+            (
+                "/latin",
+                "text/plain; charset=windows-1252",
+                latin.into_owned(),
+            ),
+        ])
+        .await;
+        let fetcher = local_fetcher(DEFAULT_TEST_BYTES);
+        let page = fetcher
+            .fetch(&format!("http://127.0.0.1:{port}/sjis"))
+            .await
+            .unwrap();
+        assert!(page.text.contains(sentence), "{}", page.text);
+        let page = fetcher
+            .fetch(&format!("http://127.0.0.1:{port}/latin"))
+            .await
+            .unwrap();
+        assert!(page.text.contains("Café crème brûlée"), "{}", page.text);
+    }
+
+    /// A PDF's text layer is read, even when the server mislabels it.
+    #[tokio::test]
+    async fn pdf_text_is_extracted() {
+        let pdf = minimal_pdf("Search reads portable documents");
+        let port = serve(vec![
+            ("/paper.pdf", "application/pdf", pdf.clone()),
+            ("/download", "application/octet-stream", pdf),
+        ])
+        .await;
+        let fetcher = local_fetcher(DEFAULT_TEST_BYTES);
+        for path in ["/paper.pdf", "/download"] {
+            let page = fetcher
+                .fetch(&format!("http://127.0.0.1:{port}{path}"))
+                .await
+                .unwrap();
+            assert!(
+                page.text.contains("Search reads portable documents"),
+                "{path}: {:?}",
+                page.text
+            );
+        }
+    }
+
+    /// Images and other binaries are refused by type instead of returned as noise.
+    #[tokio::test]
+    async fn binary_bodies_are_refused() {
+        let port = serve(vec![
+            (
+                "/logo.png",
+                "image/png",
+                b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec(),
+            ),
+            ("/blob", "", b"\0\x01\x02binary".to_vec()),
+        ])
+        .await;
+        let fetcher = local_fetcher(DEFAULT_TEST_BYTES);
+        for path in ["/logo.png", "/blob"] {
+            let error = fetcher
+                .fetch(&format!("http://127.0.0.1:{port}{path}"))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, FetchError::Unsupported(_)),
+                "{path}: {}",
+                error.message()
+            );
+        }
+    }
+
+    /// A one-page PDF whose text layer is `text`, with a correct xref table.
+    fn minimal_pdf(text: &str) -> Vec<u8> {
+        let stream = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET");
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+             /Resources << /Font << /F1 5 0 R >> >> >>"
+                .to_string(),
+            format!(
+                "<< /Length {} >>\nstream\n{stream}\nendstream",
+                stream.len()
+            ),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_string(),
+        ];
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend(format!("{} 0 obj\n{object}\nendobj\n", index + 1).bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for offset in offsets {
+            pdf.extend(format!("{offset:010} 00000 n \n").bytes());
+        }
+        pdf.extend(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .bytes(),
+        );
+        pdf
     }
 }

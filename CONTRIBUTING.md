@@ -60,8 +60,8 @@ can see it. Never work around it.
 
 The file map and conventions are in [AGENTS.md](AGENTS.md); module contracts and
 layering are in the [architecture guide](docs/contributing/architecture.md).
-Shipped and custom engines use the same version-1 manifest, command protocol,
-and package store. See [engine packages](docs/engines.md) before adding one.
+Built-in presets and custom engines use the same settings-defined adapters and
+command protocol. See [engines](docs/engines.md) before adding one.
 
 ## Branches, commits and pull requests
 

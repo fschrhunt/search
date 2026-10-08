@@ -18,15 +18,16 @@
 
 ## Find and read
 
-- **Find:** run installed engine packages in parallel and merge their results.
-  Mwmbl is the single keyless default; a failed engine is reported rather than
-  hidden. [Install maintained or custom engines](docs/engines.md) without rebuilding
-  Search. Packages live in `~/.search/engines` and use one public adapter contract.
-- **Read:** fetch pages through an SSRF-protected reader that strips page
-  clutter. Read the full clean page or request passages relevant to a query.
-  A transient in-memory cache reuses recent fetches.
+- **Find:** run the engines defined in your settings in parallel and merge their
+  results. Mwmbl is the single keyless default; a failed engine is reported rather
+  than hidden. [Add SearXNG or custom engines](docs/engines.md) in settings,
+  without installing anything or rebuilding Search.
+- **Read:** fetch HTML, text and PDF through an SSRF-protected reader that finds
+  the article and strips page clutter. Read the whole clean page, a window that
+  continues where you left off, or passages relevant to a query. A transient
+  in-memory cache reuses recent fetches.
 
-Only Mwmbl and SearXNG ship with Search. Bring other services—including AI search
+Mwmbl and SearXNG are built-in presets. Bring other services—including AI search
 APIs—as [custom HTTP or command engines](docs/engines.md#custom-engines).
 
 ## Start
@@ -92,10 +93,10 @@ select a paired remote; the agent configuration stays the same.
 | --- | --- |
 | CLI | One-shot search and fetch |
 | Rust | Use `search::core::Search` as an in-process engine |
-| HTTP | Integrate with scripts and services; includes status, search, and fetch endpoints |
+| HTTP | One JSON API for status, search, and fetch, shared by scripts and paired clients |
 | MCP | Give an agent the `web_search` and `web_fetch` tools |
 
-Search is one Cargo package. Use `search::core::{Search, Config, Query, Answer, Page, Link}` in-process, `search::engines` for runtime and package APIs,
+Search is one Cargo package. Use `search::core::{Search, Config, Query, Answer, Page, Link}` in-process, `search::core::engines` for the engine runtime,
 `search::client::Client` for local/remote routing, and `search::mcp::Server` for MCP.
 Disable default features for a library without CLI or protocol dependencies:
 
@@ -138,19 +139,23 @@ and the tradeoff in enforcing them.
 
 Settings live in `SEARCH_HOME/settings.json` (normally `~/.search/settings.json`)
 or the file selected by `-config PATH` or `CONFIG`.
-`SEARCH_HOME` selects the package, settings, and private trust root, defaulting
-to `~/.search`. Packages are never implicitly loaded from the working directory.
+`SEARCH_HOME` selects the settings and private trust root, defaulting to
+`~/.search`. Nothing is loaded implicitly from the working directory.
 
 ```json
 {
-  "engines": { "use": ["mwmbl"] },
+  "engines": {
+    "use": ["mwmbl", "searxng"],
+    "config": { "searxng": { "url": "https://searx.example.org/search" } }
+  },
   "fetch": { "cache_ttl": 600000 }
 }
 ```
 
-Install and enable optional engines before selecting them; credentials come from
-host environment variables. See [engine packages](docs/engines.md) and
-[configuration](docs/configuration.md).
+`search engines` lists built-in and configured engines; `search configure`,
+`enable`, `disable`, and `test` edit and try them. Settings are trusted: a
+command engine runs that program as you. Credentials come from host environment
+variables. See [engines](docs/engines.md) and [configuration](docs/configuration.md).
 
 Search has no persistent corpus. Upgrading from the former index-based setup?
 See [migration notes](docs/configuration.md#migration) for removed settings and
@@ -163,13 +168,15 @@ credential over HTTPS. Search clients pin the host certificate. Only `/pair`
 is public; it requires an expiring, one-use code.
 
 ```text
-GET  /healthz                 liveness
-GET  /v1/status               engines, version
-GET  /v1/search?q=...         search live web engines
-POST /v1/fetch {"urls":[...]} fetch clean pages
-POST /v1/execute              CLI/stdio operations
-POST /mcp                     MCP over streamable HTTP
+GET  /healthz                          liveness
+GET  /v1/status                        version, engines
+GET  /v1/search?q=&limit=&engines=a,b  search live web engines
+POST /v1/fetch {"urls":[...]}          clean pages, {"pages":[...]}
+POST /mcp                              MCP over streamable HTTP
 ```
+
+Paired CLI and stdio MCP clients use the same endpoints. See the
+[HTTP API reference](docs/usage.md#paired-https).
 
 ## Security
 
