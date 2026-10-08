@@ -618,10 +618,10 @@ pub(crate) fn replace(temp: &Path, path: &Path) -> Result<(), String> {
     Err("private file replacement retry limit exceeded".into())
 }
 
+// Every fixture here creates or inspects storage through the CLI-only primitives.
 #[cfg(test)]
+#[cfg(feature = "cli")]
 mod tests {
-    // Every fixture here creates or inspects storage through the CLI-only primitives.
-    #![cfg(feature = "cli")]
     use super::*;
     use std::io::Write;
 
