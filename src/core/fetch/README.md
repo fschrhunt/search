@@ -21,16 +21,17 @@ Never weaken private/metadata address classification to make a website work.
 
 Only prompt `<meta http-equiv="refresh">` targets are followed; scripts are never
 executed or mined for URLs. Every followed target returns through the guard, with
-bounded hops. Explicit `allow_private_networks` is an operator override, not a
-property of page content.
+bounded hops, while `Page.url` remains the requested URL. Explicit
+`allow_private_networks` is an operator override, not a property of page content.
 
 Only successful pages enter the transient cache. Zero TTL or byte budget disables
 storage; oversized pages bypass it. Full caches clear rather than growing without
 bound. Text is never truncated during extraction: the byte bound limits work,
 and `core::text::focus` applies a reader's query, character window and offset.
 
-Extraction runs off the async executor. Preserve literal text such as
-`values[index]` while neutralizing Markdown link/image targets. Filtering is
+Bodies are decoded under the configured byte cap; extraction runs off the async
+executor. Preserve literal text such as `values[index]` while neutralizing
+Markdown link/image targets in HTML and non-HTML responses. Filtering is
 defense in depth, not a guarantee against prompt injection: consumers must
 treat extracted text as source data, not instructions.
 

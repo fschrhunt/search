@@ -18,6 +18,34 @@ struct Fixture {
     config: PathBuf,
 }
 
+/// Human rendering strips active controls without changing the JSON response.
+#[test]
+fn search_terminal_controls_are_neutralized_only_in_human_output() {
+    let fixture = Fixture::new(
+        r#"import json, sys
+text = 'untrusted\x1b]52;c;data\x07\x1b[2J\u202e'
+json.dump({'results': [{'title': text, 'url': 'https://example.com/', 'snippet': text}]}, sys.stdout)
+"#,
+    );
+    fixture.success(&["enable", "fixture"]);
+    fixture.success(&["remote", "off"]);
+    let human = fixture.success(&["offline query"]);
+    let text = String::from_utf8(human.stdout).unwrap();
+    assert!(text.contains("untrusted]52;c;data[2J"));
+    assert!(!text.contains(['\x1b', '\x07', '\u{202e}']));
+    let json = fixture.success(&["offline query", "--json"]);
+    let answer: Value = serde_json::from_slice(&json.stdout).unwrap();
+    for field in ["title", "snippet"] {
+        assert_eq!(
+            answer["results"][0][field],
+            "untrusted\x1b]52;c;data\x07\x1b[2J\u{202e}"
+        );
+    }
+    let invalid = fixture.run(&["offline query", "--config", "missing\x1b[2J.json"]);
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(!invalid.stderr.contains(&b'\x1b'));
+}
+
 impl Fixture {
     /// Write settings defining (but not selecting) command engine `fixture`
     /// that runs `script` from its own directory.

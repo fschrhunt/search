@@ -160,15 +160,17 @@ impl Fetcher {
     /// panicked, so a batch caller can report partial success.
     ///
     /// A page that exists only to redirect the reader elsewhere (a trailing-slash
-    /// or canonical-URL move, delivered by a meta refresh or a script) is
+    /// or canonical-URL move, delivered by a prompt meta refresh) is
     /// followed to its target. Each target came from an untrusted page, so it is
     /// run back through the SSRF guard, and the chain is bounded so a redirect
-    /// loop cannot spin.
+    /// loop cannot spin. Textless stubs that cannot be followed fail as empty.
+    /// `Page.url` retains the requested URL; `final_url` identifies the destination.
     pub async fn fetch(&self, raw: &str) -> Result<Page, FetchError> {
         let mut target = raw.to_string();
         let mut hops = 0usize;
         loop {
-            let fetched = self.fetch_one(&target).await?;
+            let mut fetched = self.fetch_one(&target).await?;
+            fetched.url = raw.to_string();
             let Some(next) = fetched.redirect.clone() else {
                 return Ok(fetched);
             };
@@ -184,7 +186,8 @@ impl Fetcher {
                     target = next;
                 }
                 // A redirect that is unsafe, malformed, or looping stops here and
-                // the stub itself is returned — never followed blindly.
+                // a readable stub is returned; a textless stub is an error.
+                None if fetched.text.trim().is_empty() => return Err(FetchError::Empty),
                 None => return Ok(fetched),
             }
         }

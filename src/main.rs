@@ -7,7 +7,7 @@ async fn main() {
     let command = match args::parse(std::env::args().skip(1)) {
         Ok(command) => command,
         Err(message) => {
-            eprintln!("search: {message}");
+            let _ = search::cli::render::error(message);
             eprintln!("{}", args::usage());
             std::process::exit(2);
         }

@@ -21,7 +21,10 @@ MCP stdio; `search help` is the human-facing entry point.
 Only pairing is public on the HTTP host. Protect execution and health routes
 with device authentication, reject browser-origin requests, reload revocation
 state, and keep credential files private. Preserve certificate pins and existing
-on-disk trust filenames when changing module structure.
+on-disk trust filenames when changing module structure. Validate the trust
+replacement boundary before accepting absent storage as local mode, and bind
+the listener before renewing pairing state. Strip terminal controls only when
+rendering human output; JSON retains source data.
 
 From the repository root, run `./x test cli::`,
 `./x test --test cli_engines`, and `./x test --test cli_remote`, then `./x check`.

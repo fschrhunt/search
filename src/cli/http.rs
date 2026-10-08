@@ -41,6 +41,13 @@ pub async fn serve(
         eprintln!("search: wildcard binds require -hostname NAME for the TLS identity");
         return 1;
     }
+    let listener = match std::net::TcpListener::bind(&service.config().address) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("search: bind: {error}");
+            return 1;
+        }
+    };
     let host = match Host::open(
         &service.config().home,
         hostname,
@@ -61,13 +68,6 @@ pub async fn serve(
         Ok(tls) => tls,
         Err(error) => {
             eprintln!("search: TLS identity: {error}");
-            return 1;
-        }
-    };
-    let listener = match std::net::TcpListener::bind(&service.config().address) {
-        Ok(listener) => listener,
-        Err(error) => {
-            eprintln!("search: bind: {error}");
             return 1;
         }
     };

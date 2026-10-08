@@ -42,6 +42,8 @@ On the host, run `search pair-code` to issue another code while the server
 keeps running; use the same `SEARCH_HOME` as the serving process.
 The command prints only the new one-use code and invalidates the previous code.
 The identity and existing device credentials persist.
+A failed server start that cannot bind its listener does not renew the pairing
+code or alter the running host's admission state.
 
 Only the code hash, creation/expiry timestamps, attempt count and consumed state
 are stored in owner-only `SEARCH_HOME/trust/pairing.json`. Renewal and admission
@@ -72,13 +74,18 @@ profiles. Remote network, trust, revocation and response errors are explicit;
 they never execute locally as a fallback. `search serve` always runs its local engine even if a remote is selected.
 Engine configuration, credentials, and fetch policy resolve on the host. CLI fetch passage formatting remains on the client.
 
-Private files under `SEARCH_HOME/trust` use directory mode 0700 and file mode 0600,
-and must belong to the user running Search.
+On Unix, private files under `SEARCH_HOME/trust` use directory mode 0700 and file
+mode 0600, and must belong to the user running Search. The home and existing
+ancestors must not allow other users to replace trust storage, even when the
+trust directory is absent. Root-owned sticky temporary directories are allowed
+with private user-owned descendants. Unsafe boundaries fail closed rather than
+silently switching remote requests to local execution.
 Client `remotes.json` contains per-device secrets and certificate pins;
 host `devices.json` contains only device hashes and `pairing.json` contains the
 current one-use code hash, expiry and consumed state. Settings can be shared,
-these files cannot. Do not point multiple machines at the same trust storage. Storage
-currently requires Unix permission semantics; other platforms fail closed.
+these files cannot. Do not point multiple machines at the same trust storage. Windows uses
+protected current-user ACLs and rejects reparse points and hard-linked private
+files; use a local NTFS location. Storage on other platforms fails closed.
 
 All API and MCP endpoints, including `/healthz`, require a device bearer secret;
 `/pair` is the only public route. Credential-bearing clients reject redirects and proxies,

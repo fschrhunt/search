@@ -13,16 +13,10 @@ pub fn storage(config: Option<String>) -> Result<PathBuf, String> {
 pub fn selected(config: Option<String>) -> Result<Option<Client>, String> {
     let settings =
         crate::core::config::load(config.map(PathBuf::from)).map_err(|e| e.to_string())?;
-    // A clean local install needs neither credentials nor private storage.
-    if !settings
-        .home
-        .join("trust")
-        .try_exists()
-        .map_err(|e| e.to_string())?
-    {
+    // A clean local install needs no files, but its trust replacement boundary must be safe.
+    let Some(path) = auth::existing_dir(&settings.home)? else {
         return Ok(None);
-    }
-    let path = auth::dir(&settings.home)?;
+    };
     let remotes: Remotes = auth::read(&path.join("remotes.json"))?;
     remotes
         .selected

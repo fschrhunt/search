@@ -104,7 +104,8 @@ chrome. Text is decoded from the page's declared charset. Links become text and
 images become alt text, and link reference definitions are broken, so page
 content cannot carry an active image link to a consuming client.
 A prompt `<meta http-equiv="refresh">` redirect is followed through the same
-fetch guard; scripted redirects are not guessed at. Private and link-local
+fetch guard; scripted redirects are not guessed at. The requested URL stays in
+`url` and the retrieved destination is reported in `final_url`. Private and link-local
 destinations are refused; see [security](security.md).
 
 From the CLI, `search fetch URL -max-chars N` reads a window and prints where it
