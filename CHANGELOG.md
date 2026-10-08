@@ -4,6 +4,8 @@
 
 - Failed fetches keep the HTTP status in their per-URL result (`status: 404`
   rather than `0`) in JSON and MCP output; `0` means no HTTP response.
+- `search fetch -json` exits 1 when any URL fails, as text mode already did. The
+  per-URL `error` stays in the JSON output.
 - **Read whole pages.** Extraction no longer cuts raw HTML at 120,000 characters,
   which lost the article on large pages (Wikipedia returned its contents list,
   GitHub its "Skip to content" link) without reporting truncation. Readability

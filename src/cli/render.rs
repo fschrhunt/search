@@ -54,8 +54,9 @@ pub fn search(answer: &Answer) -> i32 {
     0
 }
 
-/// Render fetched page text, while keeping fetch failures visible.
-pub fn fetch(results: &[FocusedPage]) -> i32 {
+/// Render fetched page text. A failed URL is printed in place, so its result stays
+/// with its position; the caller decides the exit status.
+pub fn fetch(results: &[FocusedPage]) {
     for read in results {
         let page = &read.page;
         println!("## {}", page.title.as_deref().unwrap_or(&page.url));
@@ -76,11 +77,6 @@ pub fn fetch(results: &[FocusedPage]) -> i32 {
         } else if page.truncated == Some(true) {
             println!("[truncated at fetch.max_response_bytes]\n");
         }
-    }
-    if results.iter().any(|read| read.page.error.is_some()) {
-        1
-    } else {
-        0
     }
 }
 

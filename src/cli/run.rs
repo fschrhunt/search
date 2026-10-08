@@ -118,10 +118,17 @@ async fn fetch_command(
         .into_iter()
         .map(|page| crate::core::text::focus(page, &reading))
         .collect();
-    if json {
+    let failed = results.iter().any(|read| read.page.error.is_some());
+    let rendered = if json {
         crate::cli::render::json(&results)
     } else {
-        crate::cli::render::fetch(&results)
+        crate::cli::render::fetch(&results);
+        0
+    };
+    if failed {
+        1
+    } else {
+        rendered
     }
 }
 
