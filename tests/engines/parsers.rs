@@ -1,5 +1,7 @@
-//! Verify shipped HTTP pointer mappings and the custom JSON POST example offline.
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+//! Verify the custom JSON POST example and its settings entry offline. Preset
+//! mappings are checked against the saved answers in `fixtures/` by the
+//! adapter unit tests.
+#![allow(clippy::unwrap_used)]
 use std::{path::Path, process::Command};
 
 #[test]
@@ -21,36 +23,15 @@ fn custom_json_post_example_obeys_the_command_contract() {
     );
 }
 
+/// The example's settings entry is a complete command adapter once `cwd` names
+/// the copied example directory.
 #[test]
-fn http_packages_map_saved_json_with_the_declared_pointers() {
-    for id in ["mwmbl", "searxng"] {
-        let m = search::engines::catalog()
-            .unwrap()
-            .into_iter()
-            .find(|m| m.id == id)
-            .unwrap();
-        let fixture =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/engines/fixtures/{id}.json"));
-        let value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
-        let rows = value
-            .pointer(m.adapter["results_pointer"].as_str().unwrap())
-            .unwrap()
-            .as_array()
-            .unwrap();
-        let first = &rows[0];
-        for pointer in ["title_pointer", "url_pointer", "snippet_pointer"] {
-            let field = first.pointer(m.adapter[pointer].as_str().unwrap()).unwrap();
-            if field.is_array() {
-                let part = m.adapter["text_part_pointer"].as_str().unwrap();
-                assert!(field
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|value| value.pointer(part).unwrap().is_string()));
-            } else {
-                assert!(field.is_string());
-            }
-        }
-    }
+fn custom_json_post_example_settings_resolve() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples/json-post");
+    let mut settings: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("settings.json")).unwrap()).unwrap();
+    settings["engines"]["config"]["json-post"]["cwd"] = serde_json::json!(root);
+    let config: search::core::Config = serde_json::from_value(settings).unwrap();
+    let adapter = config.engines.adapter("json-post").unwrap();
+    assert!(matches!(adapter, search::core::config::Adapter::Command(_)));
 }

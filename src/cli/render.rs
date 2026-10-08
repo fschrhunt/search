@@ -1,7 +1,8 @@
 //! Render engine responses as compact terminal text or machine-readable JSON.
 
-use crate::core::{Answer, Page};
-use crate::engines::EngineStatus;
+use crate::core::engines::EngineStatus;
+use crate::core::text::FocusedPage;
+use crate::core::Answer;
 
 /// Print any serializable response as JSON; return a process-style status.
 pub fn json<T: serde::Serialize>(value: &T) -> i32 {
@@ -14,7 +15,8 @@ pub fn json<T: serde::Serialize>(value: &T) -> i32 {
     }
 }
 
-/// Render web results and engine health for a person at a terminal.
+/// Render web results and engine health for a person at a terminal: failed,
+/// timed-out, and row-skipping engines are reported on stderr.
 pub fn search(answer: &Answer) -> i32 {
     for (rank, link) in answer.results.iter().enumerate() {
         println!("{}. {}\n   {}", rank + 1, link.title, link.url);
@@ -32,10 +34,15 @@ pub fn search(answer: &Answer) -> i32 {
         let status = match engine.status {
             EngineStatus::Error => "failed",
             EngineStatus::Timeout => "timed out",
+            EngineStatus::Ok if engine.skipped > 0 => "ok",
             EngineStatus::Ok => continue,
         };
+        let skipped = match engine.skipped {
+            0 => String::new(),
+            count => format!(", skipped {count} invalid results"),
+        };
         eprintln!(
-            "{}: {status}{}",
+            "{}: {status}{skipped}{}",
             engine.name,
             engine
                 .error
@@ -48,17 +55,29 @@ pub fn search(answer: &Answer) -> i32 {
 }
 
 /// Render fetched page text, while keeping fetch failures visible.
-pub fn fetch(results: &[Page]) -> i32 {
-    for page in results {
+pub fn fetch(results: &[FocusedPage]) -> i32 {
+    for read in results {
+        let page = &read.page;
         println!("## {}", page.title.as_deref().unwrap_or(&page.url));
         println!("{}\n", page.final_url.as_deref().unwrap_or(&page.url));
         if let Some(error) = &page.error {
             println!("Fetch failed: {error}\n");
-        } else {
-            println!("{}\n", page.text);
+            continue;
+        }
+        match &read.passages {
+            Some(passages) => {
+                let texts: Vec<&str> = passages.iter().map(|p| p.text.as_str()).collect();
+                println!("{}\n", texts.join("\n\n…\n\n"));
+            }
+            None => println!("{}\n", page.text),
+        }
+        if let Some(offset) = read.next_offset {
+            println!("[continues; read on with -offset {offset}]\n");
+        } else if page.truncated == Some(true) {
+            println!("[truncated at fetch.max_response_bytes]\n");
         }
     }
-    if results.iter().any(|page| page.error.is_some()) {
+    if results.iter().any(|read| read.page.error.is_some()) {
         1
     } else {
         0

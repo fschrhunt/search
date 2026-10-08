@@ -1,14 +1,14 @@
 # Configuration
 
-`search::core::config` describes settings; it does not own running transports,
-credential values, or package leases.
+`search::core::config` describes settings; it does not own running transports
+or credential values.
 
 | File | Responsibility |
 | --- | --- |
 | `settings.rs` | `Config`, adapter types, bounds, and duration helpers |
 | `defaults.rs` | Defaults for omitted fields |
 | `load.rs` | File loading, Search home resolution, environment overrides, and validation |
-| `engines.rs` | Adapter validation and resolving an explicitly selected package's settings |
+| `engines.rs` | Built-in presets, engine selection checks, and resolving an ID to a validated adapter |
 | `mod.rs` | Public configuration API |
 
 Loading uses an explicit path, then `CONFIG`, then
@@ -17,10 +17,13 @@ default uses built-in settings; a missing explicit file is an error. Environment
 overrides apply last. Unknown fields and unusable bounds fail visibly; explicit
 zero values are not silently replaced with defaults.
 
-Package selection is explicit. `engines.config` supplies shallow adapter overrides;
-credential settings contain environment variable names, never secrets. Resolving
-adapter settings does not change the transport type or package working directory.
-The pool owns the resulting execution state.
+Settings are trusted operator configuration: `engines.config` can define
+executables. `engines.use` selects IDs. A preset ID (`mwmbl`, `searxng`) merges
+its entry shallowly over the compiled-in adapter and cannot change `type`; any
+other ID needs a complete `http` or `command` adapter. Credential settings
+contain environment variable names, never secrets. `EngineSettings::adapter`
+resolves one ID without reading credentials; the pool owns the resulting
+execution state.
 
 Run `./x test core::config` and `./x check` from the repository root.
 The [configuration guide](../../../docs/configuration.md) defines the user-facing

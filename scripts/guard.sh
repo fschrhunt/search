@@ -18,22 +18,16 @@ prod_sources() {
     find src -type f -name '*.rs'
 }
 
-# 1. Network surface. Search talks to installed engine packages and the pages a
-#    caller asks it to fetch. Shipped package hosts are audited alongside Rust
-#    call sites. Operator-configured HTTP adapters use the SSRF guard; executable
-#    packages are deliberately trusted host programs, not sandboxed. Hosts
-#    named only in a comment (a doc example, an injection illustration) are not
-#    call sites and are skipped.
+# 1. Network surface. Search talks to the engines defined in settings and the
+#    pages a caller asks it to fetch. Built-in preset hosts live in Rust source
+#    and are audited with every other call site. Operator-configured HTTP
+#    adapters use the SSRF guard; command engines are deliberately trusted host
+#    programs, not sandboxed. Hosts named only in a comment (a doc example, an
+#    injection illustration) are not call sites and are skipped.
 allowed_hosts="index.crates.io crates.io static.crates.io api.mwmbl.org example.com example.invalid localhost 127.0.0.1 0.0.0.0 github.com"
 found_hosts=$(
     for f in $(prod_sources); do
         awk '/^#\[cfg\(test\)\]/ { exit } /^[[:space:]]*(\/\/|\*)/ { next } { print }' "$f"
-    done
-    for package in src/engines/*; do
-        [ -f "$package/engine.json" ] || continue
-        for f in "$package/engine.json" "$package"/*.py; do
-            [ ! -f "$f" ] || cat "$f"
-        done
     done
     )
 found_hosts=$(printf '%s\n' "$found_hosts" | grep -ohE 'https?://[A-Za-z0-9.:-]+' | sed -E 's#https?://##' | sort -u
@@ -82,7 +76,7 @@ grep -q "guard::check_host" src/core/fetch/mod.rs || bad "the fetcher no longer 
 
 # Custom HTTP destinations are operator-configured but still guarded by default.
 # Commands are trusted host code; direct children must die when a query is cancelled.
-adapters=src/engines/adapter.rs
+adapters=src/core/engines/adapter.rs
 [ -f "$adapters" ] || bad "custom engine adapter implementation is missing"
 grep -q 'check_host' "$adapters" || bad "custom HTTP adapters no longer check destination hosts"
 grep -q 'GuardedResolver' "$adapters" || bad "custom HTTP adapters no longer guard DNS at dial time"
@@ -90,7 +84,7 @@ grep -q 'Policy::none()' "$adapters" || bad "custom HTTP adapters may follow red
 grep -q 'no_proxy()' "$adapters" || bad "custom HTTP adapters may use environment proxies"
 grep -q 'kill_on_drop(true)' "$adapters" || bad "cancelled executable adapters may keep running"
 grep -q 'env_clear()' "$adapters" || bad "executable engines inherit undeclared host credentials"
-[ ! -f src/engines/web.rs ] || bad "special built-in engine implementations remain in the core"
+[ ! -d src/core/engines/mwmbl ] && [ ! -d src/core/engines/searxng ] || bad "built-in engines must be adapter presets, not special implementations"
 
 # 5. Paired HTTPS must wrap execution routes, including MCP. Pairing is the
 #    only public admission; device hashes are reloaded on every request.
@@ -103,7 +97,6 @@ grep -q 'host.authorized(presented)' "$http" || bad "request auth no longer chec
 grep -q 'nest_service("/mcp", mcp)' "$http" || bad "MCP is not in the protected router"
 grep -q 'read::<Devices>' "$trust" || bad "device hashes are not reloaded per admission"
 grep -q 'ct_eq' "$trust" || bad "device/code comparison is not constant time"
-grep -q 'pairing.attempts >= 20' "$trust" || bad "pairing attempt bound is missing"
 grep -q 'now >= pairing.expires' "$trust" || bad "pairing expiry check is missing"
 grep -q 'pairing.used = true' "$trust" || bad "pairing codes are not consumed"
 grep -q 'mode(0o600)' "$trust" || bad "trust files are not owner-only"
@@ -139,10 +132,10 @@ fi
 [ -f tests/cli/remote.rs ] || bad "offline paired-routing contract is missing"
 grep -q 'pairing_bounds_and_hash_storage' "$trust" || bad "pairing bounds counterexamples are missing"
 
-# 7. Modules replace crate boundaries, not dependency direction. Core and engines
-#    must stay independent of the CLI and protocol-facing execution adapters.
-if grep -rE 'crate::(cli|mcp|client)(::|[;{ ])' src/core src/engines; then
-    bad "core or engines depends on a frontend or protocol adapter"
+# 7. Modules replace crate boundaries, not dependency direction. Core, including
+#    its engines, must stay independent of the CLI and protocol-facing adapters.
+if grep -rE 'crate::(cli|mcp|client)(::|[;{ ])' src/core; then
+    bad "core depends on a frontend or protocol adapter"
 fi
 
 if [ "$fail" -eq 0 ]; then

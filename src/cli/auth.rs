@@ -204,14 +204,14 @@ pub struct Host {
     /// Initial one-use code for startup display; renewed codes are never cached here.
     pub code: String,
 }
-/// Shared admission state contains only a code hash, bounded expiry and attempt count.
+/// Shared admission state contains only a code hash, bounded expiry and consumption.
+/// A 256-bit code needs no guess counter, which would only let anyone reaching
+/// the port lock pairing out; unknown fields such as a former `attempts` are ignored.
 #[derive(Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Pairing {
     hash: String,
     created_at: u64,
     expires: u64,
-    attempts: usize,
     used: bool,
 }
 
@@ -233,7 +233,6 @@ pub fn pair_code(path: &Path, window: Duration) -> Result<String, String> {
             hash: hash(&code),
             created_at,
             expires: created_at.saturating_add(window.as_secs().min(900)),
-            attempts: 0,
             used: false,
         };
         Ok(())
@@ -299,7 +298,7 @@ impl Host {
             code,
         })
     }
-    /// Persist every attempt and consume before issuing a device, preventing replay after a crash.
+    /// Consume the code under the admission lock before issuing a device, preventing replay after a crash.
     pub fn pair(&self, code: &str, name: &str) -> Result<Credential, String> {
         let admission = update(&self.path.join("pairing.json"), |pairing: &mut Pairing| {
             let now = now()?;
@@ -307,24 +306,19 @@ impl Host {
                 || pairing.used
                 || now < pairing.created_at
                 || now >= pairing.expires
-                || pairing.attempts >= 20
             {
                 Err("pairing unavailable".to_string())
+            } else if !bool::from(pairing.hash.as_bytes().ct_eq(hash(code).as_bytes())) {
+                Err("pairing failed".to_string())
+            } else if name.trim().is_empty()
+                || name.len() > 80
+                || name.chars().any(char::is_control)
+            {
+                Err("invalid device name".to_string())
             } else {
-                pairing.attempts += 1;
-                if !bool::from(pairing.hash.as_bytes().ct_eq(hash(code).as_bytes())) {
-                    Err("pairing failed".to_string())
-                } else if name.trim().is_empty()
-                    || name.len() > 80
-                    || name.chars().any(char::is_control)
-                {
-                    Err("invalid device name".to_string())
-                } else {
-                    pairing.used = true;
-                    Ok(())
-                }
+                pairing.used = true;
+                Ok(())
             };
-            // A rejected attempt still commits its updated count under the process lock.
             Ok(outcome)
         })?;
         admission?;
@@ -371,7 +365,7 @@ pub struct Credential {
 mod tests {
     use super::*;
 
-    /// Expired, exhausted and consumed codes must never enroll another device.
+    /// Expired, superseded and consumed codes must never enroll another device.
     #[test]
     fn pairing_bounds_and_hash_storage() {
         let root = std::env::temp_dir()
@@ -391,16 +385,14 @@ mod tests {
         let expired = pair_code(&host.path, Duration::ZERO).unwrap();
         assert!(host.pair(&expired, "expired").is_err());
         let host = Host::open(&root, "localhost", Duration::from_secs(900)).unwrap();
-        for _ in 0..20 {
-            assert!(host.pair("wrong", "attacker").is_err());
-        }
-        let pairing: Pairing = read(&host.path.join("pairing.json")).unwrap();
-        assert_eq!(pairing.attempts, 20);
-        assert!(host.pair(&host.code, "locked").is_err());
         let current = pair_code(&host.path, Duration::from_secs(900)).unwrap();
         let stored = fs::read_to_string(host.path.join("pairing.json")).unwrap();
         assert!(!stored.contains(&current));
         assert!(host.pair(&host.code, "superseded").is_err());
+        // Wrong guesses never lock out the holder of the real code.
+        for _ in 0..25 {
+            assert!(host.pair("wrong", "attacker").is_err());
+        }
         assert!(host.pair(&current, "renewed").is_ok());
         fs::remove_dir_all(root).unwrap();
     }

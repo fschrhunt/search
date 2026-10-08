@@ -14,8 +14,9 @@ pub async fn execute(command: Command) -> i32 {
         Command::Engines {
             action,
             args,
+            json,
             config,
-        } => match crate::cli::engines::command(&action, args, config).await {
+        } => match crate::cli::engines::command(&action, args, json, config).await {
             Ok(()) => 0,
             Err(error) => report_error(error),
         },
@@ -52,9 +53,10 @@ pub async fn execute(command: Command) -> i32 {
             urls,
             query,
             max_characters,
+            offset,
             json,
             config,
-        } => fetch_command(urls, query, max_characters, json, config).await,
+        } => fetch_command(urls, query, max_characters, offset, json, config).await,
     }
 }
 
@@ -69,7 +71,7 @@ async fn search_command(
         Ok(service) => service,
         Err(error) => return report_error(error),
     };
-    let mut request = crate::engines::Query {
+    let mut request = crate::core::Query {
         text: query,
         ..Default::default()
     };
@@ -92,43 +94,30 @@ async fn fetch_command(
     urls: Vec<String>,
     query: Option<String>,
     max_characters: Option<usize>,
+    offset: usize,
     json: bool,
     config_path: Option<String>,
 ) -> i32 {
-    if max_characters.is_some_and(|limit| limit == 0 || limit > 40_000) {
-        return report_error("max-chars must be between 1 and 40000".into());
+    if max_characters == Some(0) {
+        return report_error("max-chars must be at least 1".into());
     }
     let service = match build_client(config_path) {
         Ok(service) => service,
         Err(error) => return report_error(error),
     };
-    let mut results = match service.fetch(&urls).await {
-        Ok(results) => results,
+    let pages = match service.fetch(&urls).await {
+        Ok(pages) => pages,
         Err(error) => return report_error(error),
     };
-    for result in &mut results {
-        if let Some(focus) = query.as_deref().filter(|query| !query.trim().is_empty()) {
-            let budget = max_characters.unwrap_or(crate::core::text::DEFAULT_BUDGET);
-            let found = crate::core::text::select(&result.text, focus, budget);
-            if !found.iter().any(|passage| passage.score > 0.0) {
-                if result.text.chars().count() > budget {
-                    result.truncated = Some(true);
-                }
-                result.text = result.text.chars().take(budget).collect();
-                continue;
-            }
-            result.text = found
-                .into_iter()
-                .map(|passage| passage.text)
-                .collect::<Vec<_>>()
-                .join("\n\n");
-        } else if let Some(max) = max_characters {
-            if result.text.chars().count() > max {
-                result.truncated = Some(true);
-            }
-            result.text = result.text.chars().take(max).collect();
-        }
-    }
+    let reading = crate::core::text::Focus {
+        query,
+        max_characters,
+        offset,
+    };
+    let results: Vec<_> = pages
+        .into_iter()
+        .map(|page| crate::core::text::focus(page, &reading))
+        .collect();
     if json {
         crate::cli::render::json(&results)
     } else {

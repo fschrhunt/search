@@ -1,8 +1,42 @@
-//! The in-process search engine over live engines and guarded fetching.
+//! The in-process search engine over live engines and guarded fetching, and
+//! the query and answer types every frontend exchanges with it.
 
 use crate::core::config::Config;
+use crate::core::engines::{self, EngineState};
 use crate::core::fetch::{Fetcher, Page};
-use crate::engines::{self, Answer, Query};
+
+/// One discovered page, normalized across engines.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Link {
+    pub title: String,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    /// Every engine that returned this URL, for transparency. A list, not a
+    /// joined string: a display concern must not decide a dedup comparison.
+    pub engines: Vec<String>,
+    /// Reciprocal-rank-fusion score; higher is better.
+    pub score: f64,
+}
+
+/// The search text, result limit, and optional engine selection.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Query {
+    pub text: String,
+    pub limit: usize,
+    /// Restrict to these engine names; empty means every enabled engine.
+    pub engines: Vec<String>,
+}
+
+/// The normalized answer the caller receives.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Answer {
+    pub query: String,
+    pub results: Vec<Link>,
+    pub engines: Vec<EngineState>,
+    pub duration_ms: u64,
+}
 
 /// The configured search engine used in-process by applications and adapters.
 pub struct Search {
@@ -12,8 +46,8 @@ pub struct Search {
 }
 
 impl Search {
-    /// Resolve selected packages and build live engines and fetching.
-    /// The embedded default requires no filesystem writes.
+    /// Resolve the selected engines from settings and build live engines and
+    /// fetching. Opening writes nothing to disk.
     pub fn open(config: Config) -> Result<Self, SearchError> {
         let pool = engines::Pool::new(&config)
             .map_err(|error| SearchError::Settings(error.to_string()))?;
@@ -74,6 +108,50 @@ impl std::error::Error for SearchError {}
 mod tests {
     use super::*;
 
+    /// Wire names track engines while rankings and status values remain stable.
+    #[test]
+    fn query_and_answer_use_engine_fields() {
+        let query: Query = serde_json::from_value(serde_json::json!({
+            "text": "query", "limit": 3, "engines": ["fixture"]
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(query).unwrap(),
+            serde_json::json!({"text": "query", "limit": 3, "engines": ["fixture"]})
+        );
+        let state = |skipped| EngineState {
+            name: "fixture".into(),
+            status: engines::EngineStatus::Ok,
+            count: 1,
+            skipped,
+            error: None,
+            elapsed_ms: 1,
+        };
+        let answer = Answer {
+            query: "query".into(),
+            results: vec![Link {
+                title: "Title".into(),
+                url: "https://example.com/".into(),
+                snippet: None,
+                engines: vec!["fixture".into()],
+                score: 1.0 / 61.0,
+            }],
+            engines: vec![state(0), state(2)],
+            duration_ms: 1,
+        };
+        assert_eq!(
+            serde_json::to_value(answer).unwrap(),
+            serde_json::json!({
+                "query": "query", "results": [{"title":"Title", "url":"https://example.com/", "engines":["fixture"], "score":1.0/61.0}],
+                "engines":[
+                    {"name":"fixture", "status":"ok", "count":1, "elapsed_ms":1},
+                    {"name":"fixture", "status":"ok", "count":1, "skipped":2, "elapsed_ms":1}
+                ],
+                "duration_ms":1
+            })
+        );
+    }
+
     /// Opening the default engines must not create anything on disk.
     #[test]
     fn default_open_leaves_disk_untouched() {
@@ -86,111 +164,63 @@ mod tests {
             ..Default::default()
         };
         let service = Search::open(config).unwrap();
-        assert_eq!(service.engine_names(), [crate::engines::DEFAULT_ENGINE]);
+        assert_eq!(
+            service.engine_names(),
+            [crate::core::config::DEFAULT_ENGINE]
+        );
         assert!(!dir.exists());
     }
-    /// Missing selected packages fail without creating the package home.
+
+    /// A selected engine without settings fails by name instead of being skipped.
     #[test]
-    fn invalid_selected_package_does_not_create_home() {
-        let root = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("search-missing-{}", uuid::Uuid::new_v4()));
-        let mut config = Config {
-            home: root.join("home"),
-            ..Default::default()
-        };
+    fn unconfigured_selected_engine_fails_open() {
+        let mut config = Config::default();
         config.engines.use_engines = vec!["missing-fixture".into()];
         let error = Search::open(config).err().unwrap().to_string();
-        assert!(error.contains("missing-fixture"));
-        assert!(!root.exists());
+        assert!(error.contains("engine missing-fixture"), "{error}");
+        assert!(error.contains("engines.config.missing-fixture"), "{error}");
     }
 
-    /// Search uses trusted package assets and overrides, retaining leases only while running.
+    /// A command engine defined only in settings runs from its configured
+    /// working directory and receives its settings `config` object.
     #[tokio::test]
-    async fn installed_package_runs_from_its_root() {
+    async fn settings_defined_command_engine_runs_from_its_cwd() {
         let root = std::env::temp_dir()
             .canonicalize()
             .unwrap()
-            .join(format!("search-installed-{}", uuid::Uuid::new_v4()));
-        let source = root.join("source");
-        let home = root.join("home");
-        let mut builder = std::fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.create(&source).unwrap();
-        let manifest = serde_json::json!({
-            "schema_version":1,"id":"fixture","version":"1","description":"offline fixture",
-            "adapter":{"type":"command","command": if cfg!(windows) { "python.exe" } else { "python3" },"args":["runner.py"],"config":{"title":"default"}},
-            "files":["runner.py","asset.txt"]
-        });
+            .join(format!("search-settings-engine-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
         std::fs::write(
-            source.join("engine.json"),
-            serde_json::to_vec(&manifest).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(source.join("asset.txt"), "package asset").unwrap();
-        std::fs::write(
-            source.join("runner.py"),
+            root.join("runner.py"),
             r#"
 import sys,json
 request=json.load(sys.stdin)
-assert open('asset.txt').read() == 'package asset'
 print(json.dumps({'results':[{'title':request['config']['title'],'url':'https://example.com/'}]}))
 "#,
         )
         .unwrap();
-        let installed = crate::engines::install_local(&home, &source).unwrap();
-        let mut config = Config {
-            home: home.clone(),
-            ..Default::default()
-        };
-        config.search.engine_timeout = 5000;
-        config.engines.use_engines = vec!["fixture".into()];
-        config.engines.config.insert(
-            "fixture".into(),
-            serde_json::json!({"config":{"title":"configured"}}),
-        );
-        config
-            .engines
-            .config
-            .insert("unselected".into(), serde_json::json!({"type":"invalid"}));
-        drop(installed);
-        let service = Search::open(config.clone()).unwrap();
-        assert_eq!(service.config().engines.config, config.engines.config);
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "search": {"engine_timeout": 5000},
+            "engines": {"use": ["fixture"], "config": {"fixture": {
+                "type": "command",
+                "command": if cfg!(windows) { "python.exe" } else { "python3" },
+                "args": ["runner.py"],
+                "cwd": root,
+                "config": {"title": "configured"}
+            }}}
+        }))
+        .unwrap();
+        config.home = root.join("home");
+        let service = Search::open(config).unwrap();
         let response = service
             .search(Query {
                 text: "query".into(),
                 ..Default::default()
             })
             .await;
+        std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(response.engines[0].status, engines::EngineStatus::Ok);
         assert_eq!(response.results[0].title, "configured");
         assert_eq!(response.results[0].engines, ["fixture"]);
-        assert!(crate::engines::remove(&home, "fixture").is_err());
-        drop(service);
-        // Parallel process tests can briefly inherit the lease between fork and exec.
-        // Keep the release assertion bounded so a real retained lease still fails.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        loop {
-            let result = crate::engines::remove(&home, "fixture");
-            if result.is_ok() {
-                break;
-            }
-            assert!(
-                result
-                    .as_ref()
-                    .err()
-                    .is_some_and(|error| error.contains("package is busy"))
-                    && std::time::Instant::now() < deadline,
-                "lease was not released: {result:?}"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,10 +1,10 @@
 # Install
 
 Search ships only Mwmbl and SearXNG, with Mwmbl ready to use by default.
-Installing Search does not require Python or a SearXNG instance. Optional
-executable packages declare their own runtime requirements. Use `search engines
-available` after installation. Packages/settings/private trust live under
-`~/.search` or the explicit `SEARCH_HOME`; see [engine packages](engines.md).
+Installing Search does not require Python or a SearXNG instance. Custom command
+engines bring their own runtime requirements. Use `search engines` after
+installation. Settings and private trust live under `~/.search` or the explicit
+`SEARCH_HOME`; see [engines](engines.md).
 
 Release targets are Linux, macOS, and Windows, each on arm64 and x86_64.
 Native CI checks each target; release builds and installation smoke tests also
@@ -71,7 +71,7 @@ Stop running Search hosts before replacing `search.exe`; Windows may refuse
 replacement of an executable that is still in use.
 
 Search defaults to `.search` under the user's home/profile directory. Settings,
-engine packages, and pairing work locally on Windows; use NTFS paths with private
+engines, and pairing work locally on Windows; use NTFS paths with private
 ACLs. `SEARCH_HOME` can select another absolute location.
 
 ## Homebrew

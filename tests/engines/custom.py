@@ -48,7 +48,7 @@ class CustomEngine(unittest.TestCase):
                 engine.search('query', 1, config)
 
     def test_command_protocol_redacts_failures_and_exchanges_one_answer(self):
-        """Run the starter from its package directory with network replaced offline."""
+        """Run the starter from its own directory with network replaced offline."""
         script = "import engine; engine.search=lambda query,limit,config: [{'title':query,'url':'https://example.com/'}]; engine.main()"
         valid = {'version': 1, 'query': 'literal query', 'limit': 1}
         done = subprocess.run([sys.executable, '-S', '-B', '-c', script], cwd=ROOT, input=json.dumps(valid), text=True, capture_output=True, timeout=5)

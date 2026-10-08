@@ -12,7 +12,7 @@ stdio MCP. Hosting is optional. Use `search help` for commands and
 | [Usage](usage.md) | Running the service, the JSON API, and MCP |
 | [Remote hosting](remote.md) | Pair devices and route CLI and stdio MCP |
 | [Configuration](configuration.md) | Settings, defaults, and migration |
-| [Engine packages](engines.md) | Install maintained/local engines, configure and diagnose them |
+| [Engines](engines.md) | Define, configure and diagnose engines in settings |
 | [Security](security.md) | The SSRF guard, auth, and how to deploy it safely |
 
 ## Working on it

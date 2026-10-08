@@ -226,8 +226,8 @@ jobs:
           sh install.sh --version "$TAG" --dir "$RUNNER_TEMP/search-bin"
           test "$("$RUNNER_TEMP/search-bin/search" version)" = "$TAG"
           export SEARCH_HOME="$RUNNER_TEMP/search-home"
-          "$RUNNER_TEMP/search-bin/search" engines available
-          "$RUNNER_TEMP/search-bin/search" install searxng
+          "$RUNNER_TEMP/search-bin/search" engines list
+          "$RUNNER_TEMP/search-bin/search" configure searxng url https://searx.example/search
           "$RUNNER_TEMP/search-bin/search" engines list
       - name: Install the Windows release
         if: runner.os == 'Windows'
@@ -238,9 +238,9 @@ jobs:
           ./install.ps1 -Version $env:TAG -Dir "$env:RUNNER_TEMP/search-bin"
           if ((& "$env:RUNNER_TEMP/search-bin/search.exe" version) -ne $env:TAG) { throw 'Installed version mismatch' }
           $env:SEARCH_HOME = Join-Path $env:LOCALAPPDATA ('Search-install-smoke-' + [Guid]::NewGuid())
-          & "$env:RUNNER_TEMP/search-bin/search.exe" engines available
-          if ($LASTEXITCODE -ne 0) { throw 'Catalog inspection failed' }
-          & "$env:RUNNER_TEMP/search-bin/search.exe" install searxng
-          if ($LASTEXITCODE -ne 0) { throw 'Package installation failed' }
+          & "$env:RUNNER_TEMP/search-bin/search.exe" engines list
+          if ($LASTEXITCODE -ne 0) { throw 'Engine listing failed' }
+          & "$env:RUNNER_TEMP/search-bin/search.exe" configure searxng url https://searx.example/search
+          if ($LASTEXITCODE -ne 0) { throw 'Engine configuration failed' }
           & "$env:RUNNER_TEMP/search-bin/search.exe" engines list
           if ($LASTEXITCODE -ne 0) { throw 'Package listing failed' }

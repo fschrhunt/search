@@ -1,5 +1,6 @@
-//! Search's live engine, package lifecycle, shared execution and optional frontends.
-//! Core stays protocol-free; MCP is optional and the CLI feature includes MCP.
+//! Search's live engine, shared execution and optional frontends.
+//! Core (including its engines) stays protocol-free; MCP is optional and the
+//! CLI feature includes MCP.
 #![cfg_attr(
     not(test),
     deny(
@@ -15,7 +16,6 @@
 pub mod cli;
 pub mod client;
 pub mod core;
-pub mod engines;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 #[cfg(windows)]

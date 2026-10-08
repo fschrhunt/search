@@ -1,14 +1,18 @@
 //! Configured GET and executable engines, with bounded output and opaque errors.
+//!
+//! Both transports map an upstream JSON answer into `Found`: invalid rows are
+//! skipped and counted, but an answer whose every row is invalid is malformed.
 
 use std::process::Stdio;
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{Engine, EngineError, EngineFuture, Link};
+use super::{Engine, EngineError, EngineFuture, Found};
 use crate::core::config::engines::http_url;
 use crate::core::config::{Adapter as Settings, Command, Http};
 use crate::core::fetch::guard::{check_host, GuardedResolver};
+use crate::core::Link;
 
 /// An owned configured identifier and its query transport.
 pub(super) struct Adapter {
@@ -75,14 +79,14 @@ async fn http(
     client: &reqwest::Client,
     query: &str,
     limit: usize,
-) -> Result<Vec<Link>, EngineError> {
+) -> Result<Found, EngineError> {
     let mut url =
-        http_url(&settings.url).ok_or_else(|| EngineError::malformed("invalid custom endpoint"))?;
+        http_url(&settings.url).ok_or_else(|| EngineError::malformed("invalid engine endpoint"))?;
     check_host(
         url.host_str().unwrap_or_default(),
         settings.allow_private_networks,
     )
-    .map_err(|_| EngineError::network("custom endpoint refused"))?;
+    .map_err(|_| EngineError::network("engine endpoint refused"))?;
     {
         let dynamic =
             |key: &str| key == settings.query_param || settings.limit_param.as_deref() == Some(key);
@@ -112,7 +116,7 @@ async fn http(
     }
     for (key, variable) in &settings.header_env {
         let value = std::env::var(variable)
-            .map_err(|_| EngineError::rejected("custom credential unavailable"))?;
+            .map_err(|_| EngineError::rejected("engine credential unavailable"))?;
         insert_header(&mut headers, key, &value, true)?;
     }
     let mut response = client
@@ -120,10 +124,10 @@ async fn http(
         .headers(headers)
         .send()
         .await
-        .map_err(|_| EngineError::network("custom HTTP request failed"))?;
+        .map_err(|_| EngineError::network("engine HTTP request failed"))?;
     if !response.status().is_success() {
         return Err(EngineError::rejected(format!(
-            "custom HTTP status {} rejected",
+            "engine HTTP status {} rejected",
             response.status().as_u16()
         )));
     }
@@ -131,10 +135,10 @@ async fn http(
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| EngineError::network("custom HTTP read failed"))?
+        .map_err(|_| EngineError::network("engine HTTP read failed"))?
     {
         if (bytes.len() as u64).saturating_add(chunk.len() as u64) > settings.max_response_bytes {
-            return Err(EngineError::malformed("custom output exceeded cap"));
+            return Err(EngineError::malformed("engine output exceeded cap"));
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -161,35 +165,30 @@ fn insert_header(
     sensitive: bool,
 ) -> Result<(), EngineError> {
     let key = reqwest::header::HeaderName::from_bytes(key.as_bytes())
-        .map_err(|_| EngineError::rejected("custom header invalid"))?;
+        .map_err(|_| EngineError::rejected("engine header invalid"))?;
     let mut value = reqwest::header::HeaderValue::from_str(value)
-        .map_err(|_| EngineError::rejected("custom header invalid"))?;
+        .map_err(|_| EngineError::rejected("engine header invalid"))?;
     value.set_sensitive(sensitive);
     headers.insert(key, value);
     Ok(())
 }
 
 /// Exchange one strict JSON document; dropping this future kills the direct child.
+/// `command` is absolute or a bare name found on `PATH`; settings resolution
+/// supplies an absolute working directory.
 async fn command(
     name: &str,
     settings: &Command,
     query: &str,
     limit: usize,
-) -> Result<Vec<Link>, EngineError> {
-    if !settings.cwd.is_absolute() {
-        return Err(EngineError::rejected("command package root unavailable"));
-    }
-    // Relative executable paths must be resolved against the same root on every OS.
-    let executable = if settings.command.contains('/') || settings.command.contains('\\') {
-        settings.cwd.join(&settings.command)
-    } else {
-        std::path::PathBuf::from(&settings.command)
-    };
-    let mut process = tokio::process::Command::new(executable);
-    process
-        .args(&settings.args)
-        .current_dir(&settings.cwd)
-        .env_clear();
+) -> Result<Found, EngineError> {
+    let cwd = settings
+        .cwd
+        .as_deref()
+        .filter(|cwd| cwd.is_absolute())
+        .ok_or_else(|| EngineError::rejected("engine working directory unavailable"))?;
+    let mut process = tokio::process::Command::new(&settings.command);
+    process.args(&settings.args).current_dir(cwd).env_clear();
     for name in [
         "PATH",
         "HOME",
@@ -208,11 +207,11 @@ async fn command(
             continue;
         }
         let value = std::env::var_os(name)
-            .ok_or_else(|| EngineError::rejected("custom credential unavailable"))?;
+            .ok_or_else(|| EngineError::rejected("engine credential unavailable"))?;
         process.env(name, value);
     }
-    super::store::command_temp_dir(&settings.temp_dir)
-        .map_err(|_| EngineError::rejected("custom temporary directory unavailable or unsafe"))?;
+    super::scratch::prepare(&settings.temp_dir)
+        .map_err(|_| EngineError::rejected("engine temporary directory unavailable or unsafe"))?;
     for name in ["TMPDIR", "TMP", "TEMP"] {
         process.env(name, &settings.temp_dir);
     }
@@ -222,15 +221,15 @@ async fn command(
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|_| EngineError::network("custom command failed to start"))?;
+        .map_err(|_| EngineError::network("engine command failed to start"))?;
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| EngineError::network("custom command input unavailable"))?;
+        .ok_or_else(|| EngineError::network("engine command input unavailable"))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| EngineError::network("custom command output unavailable"))?;
+        .ok_or_else(|| EngineError::network("engine command output unavailable"))?;
     let mut request = serde_json::json!({"version": 1, "query": query, "limit": limit});
     if !settings.config.is_empty() {
         if let Some(object) = request.as_object_mut() {
@@ -245,11 +244,11 @@ async fn command(
         stdin
             .write_all(&request)
             .await
-            .map_err(|_| EngineError::network("custom command write failed"))?;
+            .map_err(|_| EngineError::network("engine command write failed"))?;
         stdin
             .shutdown()
             .await
-            .map_err(|_| EngineError::network("custom command write failed"))?;
+            .map_err(|_| EngineError::network("engine command write failed"))?;
         drop(stdin);
         Ok::<(), EngineError>(())
     };
@@ -259,9 +258,9 @@ async fn command(
             .take(settings.max_response_bytes.saturating_add(1))
             .read_to_end(&mut bytes)
             .await
-            .map_err(|_| EngineError::network("custom command read failed"))?;
+            .map_err(|_| EngineError::network("engine command read failed"))?;
         if bytes.len() as u64 > settings.max_response_bytes {
-            return Err(EngineError::malformed("custom output exceeded cap"));
+            return Err(EngineError::malformed("engine output exceeded cap"));
         }
         Ok(bytes)
     };
@@ -269,10 +268,10 @@ async fn command(
     let status = child
         .wait()
         .await
-        .map_err(|_| EngineError::network("custom command wait failed"))?;
+        .map_err(|_| EngineError::network("engine command wait failed"))?;
     if !status.success() {
         return Err(EngineError::rejected(
-            "custom command exited unsuccessfully",
+            "engine command exited unsuccessfully",
         ));
     }
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
@@ -298,81 +297,84 @@ impl Mapping<'_> {
     };
 }
 
-/// Decode text or explicitly mapped ordered text fragments, never silently discard parts.
-fn mapped_text(value: &serde_json::Value, part: Option<&str>) -> Result<String, EngineError> {
+/// Decode text or explicitly mapped ordered text fragments; `None` when any part is unusable.
+fn mapped_text(value: &serde_json::Value, part: Option<&str>) -> Option<String> {
     if let Some(text) = value.as_str() {
-        return Ok(text.into());
+        return Some(text.into());
     }
-    let pointer = part.ok_or_else(malformed)?;
-    let parts = value.as_array().ok_or_else(malformed)?;
+    let pointer = part?;
     let mut text = String::new();
-    for part in parts {
-        text.push_str(
-            part.pointer(pointer)
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(malformed)?,
-        );
+    for part in value.as_array()? {
+        text.push_str(part.pointer(pointer)?.as_str()?);
     }
-    Ok(text)
+    Some(text)
 }
 
-/// Validate all rows before truncating, and stamp only locally configured provenance.
+/// Map one row, or `None` when its title is empty, its URL is not an absolute
+/// credential-free HTTP(S) URL, or its snippet is present but not text.
+fn row(name: &str, row: &serde_json::Value, mapping: &Mapping<'_>) -> Option<Link> {
+    let title = mapped_text(row.pointer(mapping.title)?, mapping.text_part)?;
+    if title.trim().is_empty() {
+        return None;
+    }
+    let url = row.pointer(mapping.url)?.as_str()?;
+    // Result fragments are useful page anchors; endpoint fragments are forbidden.
+    let mut parsed = url::Url::parse(url).ok()?;
+    parsed.set_fragment(None);
+    http_url(parsed.as_str())?;
+    let snippet = match row.pointer(mapping.snippet) {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(mapped_text(value, mapping.text_part)?),
+    };
+    Some(Link {
+        title,
+        url: url.into(),
+        snippet,
+        engines: vec![name.into()],
+        score: 0.0,
+    })
+}
+
+/// Collect valid rows up to `limit`, counting skipped invalid rows on the way,
+/// and stamp only locally configured provenance. A missing results array, or a
+/// non-empty one with no valid row, is malformed.
 fn rows(
     name: &str,
     value: &serde_json::Value,
     mapping: Mapping<'_>,
     limit: usize,
-) -> Result<Vec<Link>, EngineError> {
+) -> Result<Found, EngineError> {
     let rows = value
         .pointer(mapping.results)
         .and_then(serde_json::Value::as_array)
         .ok_or_else(malformed)?;
-    let mut links = Vec::new();
-    for row in rows {
-        let title = mapped_text(
-            row.pointer(mapping.title).ok_or_else(malformed)?,
-            mapping.text_part,
-        )?;
-        if title.trim().is_empty() {
-            return Err(malformed());
+    let mut found = Found::default();
+    for value in rows {
+        if found.links.len() >= limit {
+            break;
         }
-        let url = row
-            .pointer(mapping.url)
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(malformed)?;
-        // Result fragments are useful page anchors; endpoint fragments are forbidden.
-        let mut parsed = url::Url::parse(url).map_err(|_| malformed())?;
-        parsed.set_fragment(None);
-        if http_url(parsed.as_str()).is_none() {
-            return Err(malformed());
-        }
-        let snippet = match row.pointer(mapping.snippet) {
-            None | Some(serde_json::Value::Null) => None,
-            Some(value) => Some(mapped_text(value, mapping.text_part)?),
-        };
-        if links.len() < limit {
-            links.push(Link {
-                title,
-                url: url.into(),
-                snippet,
-                engines: vec![name.into()],
-                score: 0.0,
-            });
+        match row(name, value, &mapping) {
+            Some(link) => found.links.push(link),
+            None => found.skipped += 1,
         }
     }
-    Ok(links)
+    if found.links.is_empty() && found.skipped > 0 {
+        return Err(malformed());
+    }
+    Ok(found)
 }
 
 /// Parsing errors never carry any adapter output.
 fn malformed() -> EngineError {
-    EngineError::malformed("custom response malformed")
+    EngineError::malformed("engine response malformed")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::config::Config;
-    use crate::engines::{EngineStatus, Pool, Query};
+    use crate::core::engines::{EngineStatus, Pool};
+    use crate::core::Query;
     use std::time::Duration;
 
     /// Python is only an offline executable fixture, never a production dependency.
@@ -386,7 +388,7 @@ mod tests {
             .into(),
             config: Default::default(),
             env: Vec::new(),
-            cwd: std::env::temp_dir().canonicalize().unwrap(),
+            cwd: Some(std::env::temp_dir().canonicalize().unwrap()),
             temp_dir: std::env::temp_dir().canonicalize().unwrap().join("search"),
             args: vec!["-c".into(), script.trim_start().into()],
             max_response_bytes: cap,
@@ -404,6 +406,7 @@ mod tests {
             .unwrap()
             .search(query.into(), limit)
             .await
+            .map(|found| found.links)
     }
 
     #[tokio::test]
@@ -422,20 +425,21 @@ print(json.dumps({'results':[{'title':'First','url':'https://example.com/a','eng
         settings.args.push("$HOME".into());
         let results = command("owned", &settings, "$(echo secret) $HOME ~", 1)
             .await
-            .unwrap();
+            .unwrap()
+            .links;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].engines, ["owned"]);
         assert_eq!(results[0].score, 0.0);
     }
 
     #[tokio::test]
-    async fn commands_receive_only_declared_credentials_package_cwd_and_json_config() {
+    async fn commands_receive_only_declared_credentials_cwd_and_json_config() {
         let root = std::env::temp_dir()
             .canonicalize()
             .unwrap()
             .join(format!("search-command-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("asset.txt"), "package data").unwrap();
+        std::fs::write(root.join("asset.txt"), "engine data").unwrap();
         let declared = format!("SEARCH_DECLARED_{}", uuid::Uuid::new_v4().simple());
         let hidden = format!("SEARCH_HIDDEN_{}", uuid::Uuid::new_v4().simple());
         std::env::set_var(&declared, "fixture-secret");
@@ -446,13 +450,13 @@ import sys,json,os
 request=json.load(sys.stdin)
 assert os.environ[sys.argv[1]] == 'fixture-secret'
 assert sys.argv[2] not in os.environ
-assert open('asset.txt').read() == 'package data'
+assert open('asset.txt').read() == 'engine data'
 assert request['config'] == {'literal':'$HOME; $(echo secret)'}
 print(json.dumps({'results':[]}))
 "#,
             4096,
         );
-        settings.cwd = root.clone();
+        settings.cwd = Some(root.clone());
         settings.env.push(declared.clone());
         settings.args.extend([declared.clone(), hidden.clone()]);
         settings
@@ -462,9 +466,9 @@ print(json.dumps({'results':[]}))
         std::env::remove_var(&declared);
         std::env::remove_var(&hidden);
         std::fs::remove_dir_all(root).unwrap();
-        assert!(result.unwrap().is_empty());
+        assert!(result.unwrap().links.is_empty());
         let error = command("fixture", &settings, "q", 1).await.unwrap_err();
-        assert_eq!(error.message, "custom credential unavailable");
+        assert_eq!(error.message, "engine credential unavailable");
     }
 
     #[tokio::test]
@@ -499,6 +503,7 @@ print(json.dumps({'results':[]}))
         assert!(command("fixture", &settings, "q", 1)
             .await
             .unwrap()
+            .links
             .is_empty());
         let link = root.join("link");
         symlink(&scratch, &link).unwrap();
@@ -533,7 +538,7 @@ print(json.dumps({'results':[]}))
         .await
         .unwrap()
         .unwrap();
-        assert!(results.is_empty());
+        assert!(results.links.is_empty());
     }
 
     /// A one-shot local socket captures the request and emits a chosen wire answer.
@@ -634,7 +639,12 @@ print(json.dumps({'results':[]}))
         let result = tokio::time::timeout(Duration::from_secs(5), async {
             for value in ["first", "second"] {
                 std::env::set_var(&variable, value);
-                assert!(adapter.search("q".into(), 1).await.unwrap().is_empty());
+                assert!(adapter
+                    .search("q".into(), 1)
+                    .await
+                    .unwrap()
+                    .links
+                    .is_empty());
             }
             server.await.unwrap();
         })
@@ -673,7 +683,7 @@ print(json.dumps({'results':[]}))
         task.await.unwrap();
         assert_eq!(results[0].title, "Rust async guide");
         assert_eq!(results[0].snippet.as_deref(), Some("First second"));
-        assert!(mapped_text(&serde_json::json!([{"value":4}]), Some("/value")).is_err());
+        assert!(mapped_text(&serde_json::json!([{"value":4}]), Some("/value")).is_none());
     }
 
     #[tokio::test]
@@ -720,7 +730,7 @@ print(json.dumps({'results':[]}))
         assert_eq!(response.engines[0].status, EngineStatus::Error);
         assert_eq!(
             response.engines[0].error.as_deref(),
-            Some("custom endpoint refused")
+            Some("engine endpoint refused")
         );
         let mut settings = http_settings("https://example.com/");
         settings.header_env.insert(
@@ -735,7 +745,7 @@ print(json.dumps({'results':[]}))
         assert_eq!(response.engines[0].status, EngineStatus::Error);
         assert_eq!(
             response.engines[0].error.as_deref(),
-            Some("custom credential unavailable")
+            Some("engine credential unavailable")
         );
     }
 
@@ -790,17 +800,92 @@ print(json.dumps({'results':[{'title':str(i),'url':'https://example.com/'+str(i)
         assert_eq!(response.engines[0].status, EngineStatus::Timeout);
     }
 
+    /// One bad row costs that row, not the engine; an answer with no valid row
+    /// at all is malformed rather than a silent empty success.
     #[test]
-    fn result_validation_rejects_invalid_rows_even_beyond_limit() {
-        for row in [
+    fn invalid_rows_are_skipped_and_counted() {
+        let good = serde_json::json!({"title":"Title","url":"https://example.com/"});
+        for bad in [
             serde_json::json!({"title":" ","url":"https://example.com/"}),
+            serde_json::json!({"url":"https://example.com/"}),
             serde_json::json!({"title":"Title","url":"/relative"}),
             serde_json::json!({"title":"Title","url":"file:///tmp/page"}),
             serde_json::json!({"title":"Title","url":"https://user:password@example.com/"}),
             serde_json::json!({"title":"Title","url":"https://example.com/","snippet":8}),
         ] {
-            let value = serde_json::json!({"results":[row]});
-            assert!(rows("fixture", &value, Mapping::COMMAND, 0).is_err());
+            let value = serde_json::json!({"results":[bad.clone(), good.clone()]});
+            let found = rows("fixture", &value, Mapping::COMMAND, 10).unwrap();
+            assert_eq!((found.links.len(), found.skipped), (1, 1), "{bad}");
+            let value = serde_json::json!({"results":[bad]});
+            assert!(rows("fixture", &value, Mapping::COMMAND, 10).is_err());
+        }
+        let empty = serde_json::json!({"results":[]});
+        assert!(rows("fixture", &empty, Mapping::COMMAND, 10)
+            .unwrap()
+            .links
+            .is_empty());
+    }
+
+    /// Regression: a live Mwmbl answer with one empty-titled row among many
+    /// returned zero results because that row failed the whole engine.
+    #[test]
+    fn mwmbl_row_with_empty_title_does_not_fail_the_engine() {
+        let Settings::Http(mwmbl) = crate::core::config::EngineSettings::default()
+            .adapter("mwmbl")
+            .unwrap()
+        else {
+            panic!("mwmbl is an HTTP preset")
+        };
+        let value = serde_json::json!([
+            {"title":[{"value":"How to Tie a Tie"}],"url":"https://example.com/tie","extract":[{"value":"Steps"}]},
+            {"title":[],"url":"https://example.com/untitled","extract":[{"value":"No title"}]},
+            {"title":[{"value":"Knots"}],"url":"https://example.com/knots","extract":[]}
+        ]);
+        let mapping = Mapping {
+            results: &mwmbl.results_pointer,
+            title: &mwmbl.title_pointer,
+            url: &mwmbl.url_pointer,
+            snippet: &mwmbl.snippet_pointer,
+            text_part: mwmbl.text_part_pointer.as_deref(),
+        };
+        let found = rows("mwmbl", &value, mapping, 10).unwrap();
+        assert_eq!(found.links.len(), 2);
+        assert_eq!(found.skipped, 1);
+        assert_eq!(found.links[0].title, "How to Tie a Tie");
+    }
+
+    /// The presets' mappings parse saved upstream answers.
+    #[test]
+    fn presets_map_saved_answers() {
+        let mut settings = crate::core::config::EngineSettings::default();
+        settings.config.insert(
+            "searxng".into(),
+            serde_json::json!({"url":"https://searx.example/search"}),
+        );
+        for (id, saved) in [
+            (
+                "mwmbl",
+                include_str!("../../../tests/engines/fixtures/mwmbl.json"),
+            ),
+            (
+                "searxng",
+                include_str!("../../../tests/engines/fixtures/searxng.json"),
+            ),
+        ] {
+            let Settings::Http(http) = settings.adapter(id).unwrap() else {
+                panic!("{id} is an HTTP preset")
+            };
+            let mapping = Mapping {
+                results: &http.results_pointer,
+                title: &http.title_pointer,
+                url: &http.url_pointer,
+                snippet: &http.snippet_pointer,
+                text_part: http.text_part_pointer.as_deref(),
+            };
+            let value = serde_json::from_str(saved).unwrap();
+            let found = rows(id, &value, mapping, 10).unwrap();
+            assert_eq!(found.skipped, 0, "{id}");
+            assert!(found.links[0].snippet.is_some(), "{id}");
         }
     }
 

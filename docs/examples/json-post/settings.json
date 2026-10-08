@@ -1,0 +1,18 @@
+{
+  "engines": {
+    "use": ["mwmbl", "json-post"],
+    "config": {
+      "json-post": {
+        "type": "command",
+        "command": "python3",
+        "args": ["-S", "-B", "engine.py"],
+        "cwd": "/absolute/path/to/json-post",
+        "env": ["SEARCH_API_KEY"],
+        "config": {
+          "endpoint": "https://example.com/search",
+          "timeout": 30
+        }
+      }
+    }
+  }
+}
