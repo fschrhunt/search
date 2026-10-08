@@ -46,6 +46,7 @@ pub struct Page {
     pub fetched_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_url: Option<String>,
+    /// The HTTP status, or 0 when no HTTP response was received.
     pub status: u16,
     pub content_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,6 +86,15 @@ pub enum FetchError {
 }
 
 impl FetchError {
+    /// The HTTP status the failure carries, or 0 when no response was received.
+    pub fn status(&self) -> u16 {
+        match self {
+            FetchError::Status(code) => *code,
+            _ => 0,
+        }
+    }
+
+    /// The caller-facing reason, without the URL, for text and JSON output.
     pub fn message(&self) -> String {
         match self {
             FetchError::Scheme => "only http and https URLs are supported".into(),
@@ -295,7 +305,7 @@ impl Fetcher {
                     url: url.clone(),
                     fetched_at: None,
                     final_url: None,
-                    status: 0,
+                    status: error.status(),
                     content_type: String::new(),
                     title: None,
                     byline: None,
@@ -679,6 +689,31 @@ mod tests {
             .fetch(&format!("http://127.0.0.1:{port}/hop1"))
             .await
             .is_err());
+    }
+
+    /// A failed HTTP response keeps its status in the per-URL result, so a machine can
+    /// tell a 404 from a request that never got a response.
+    #[tokio::test]
+    async fn failed_http_status_is_kept_per_url() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut chunk = [0u8; 1024];
+                let _ = socket.read(&mut chunk).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+            }
+        });
+        let pages = local_fetcher(DEFAULT_TEST_BYTES)
+            .fetch_many(&[format!("http://127.0.0.1:{port}/missing")])
+            .await;
+        assert_eq!(pages[0].status, 404);
+        assert_eq!(pages[0].error.as_deref(), Some("HTTP 404"));
     }
 
     /// Serve fixed `(path, content type, body)` responses on a loopback port.

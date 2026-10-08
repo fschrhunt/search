@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Failed fetches keep the HTTP status in their per-URL result (`status: 404`
+  rather than `0`) in JSON and MCP output; `0` means no HTTP response.
 - **Read whole pages.** Extraction no longer cuts raw HTML at 120,000 characters,
   which lost the article on large pages (Wikipedia returned its contents list,
   GitHub its "Skip to content" link) without reporting truncation. Readability
