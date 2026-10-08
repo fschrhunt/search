@@ -50,7 +50,7 @@ pub async fn command(
                 return Err("usage: search pair-code [-config PATH]".into());
             }
             let code = auth::pair_code(&path, std::time::Duration::from_secs(900))?;
-            eprintln!("search: one-use pairing code (expires in 15 minutes):");
+            eprintln!("search: one-use pairing code (expires in 15 minutes; 20 attempts):");
             println!("{code}");
         }
         "pair" => {

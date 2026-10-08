@@ -65,11 +65,10 @@ still must be treated as data by the consuming model.
 Every API and MCP route, including `/healthz`, requires a revocable per-device
 secret over HTTPS. Only `/pair` is public, and it requires a one-use code.
 The host stores device credential hashes and compares them with `subtle`.
-The one-use pairing code expires after 15 minutes. It holds 256 random bits, so
-guesses are not counted; a guess limit would only let anyone who reaches the
-port lock out pairing. `search pair-code` renews it locally without restarting
-the host. Only the code hash is stored, with expiry and consumed state, under
-the same cross-process lock used for admission. Consumption commits before a
+The one-use pairing code expires after 15 minutes and locks after 20 attempts.
+`search pair-code` renews it locally without restarting the host. Only the code
+hash is stored, with expiry, consumed state and failed attempts, under the same
+cross-process lock used for admission. Consumption commits before a
 device is issued; renewal invalidates earlier codes. Clock rollback before code
 creation fails closed.
 Clients verify the public certificate fingerprint before transmitting the code.

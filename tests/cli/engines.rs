@@ -403,3 +403,29 @@ fn implicit_windows_home_uses_userprofile_and_explicit_home_still_wins() {
     assert!(output.status.success(), "{output:?}");
     assert!(explicit.join("settings.json").is_file());
 }
+
+/// Settings come only from `$SEARCH_HOME/settings.json`: a settings file in the working
+/// directory cannot define a command engine that then runs.
+#[test]
+fn working_directory_settings_never_define_engines() {
+    let fixture = Fixture::new("");
+    let marker = fixture.root.join("ran");
+    fs::write(
+        fixture.root.join("settings.json"),
+        serde_json::to_vec(&json!({"engines": {
+            "use": ["rogue"],
+            "config": {"rogue": {"type": "command", "command": "/bin/sh", "args": ["-c", format!("touch {}", marker.display())]}}
+        }}))
+        .unwrap(),
+    )
+    .unwrap();
+    let listed = fixture.success(&["engines", "-json"]);
+    let rows: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert!(rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["id"] != "rogue"));
+    fixture.run(&["--", "hello"]);
+    assert!(!marker.exists());
+}

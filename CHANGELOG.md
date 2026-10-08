@@ -40,9 +40,6 @@
   `search.max_results` instead of a fixed 10; requests stay capped at 50.
 - CLI, MCP and HTTP share one set of input bounds (1–512-byte queries, 1–10 URLs
   of at most 8192 bytes). Local `search fetch` now refuses more than 10 URLs.
-- Pairing codes no longer lock after 20 failed attempts: a 256-bit one-use code
-  makes the limit pointless, and it let anyone reaching the port block pairing.
-  Codes remain one-use and expire after 15 minutes.
 - **Breaking:** engines are defined in settings instead of installed packages.
   `engines.use` selects IDs; `engines.config.ID` overrides the built-in `mwmbl`
   and `searxng` presets or defines a custom `http`/`command` adapter. Settings are

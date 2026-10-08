@@ -102,7 +102,7 @@ pub struct Fetcher {
     settings: FetchSettings,
     client: reqwest::Client,
     cache: cache::Cache,
-    permits: tokio::sync::Semaphore,
+    permits: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl Fetcher {
@@ -135,7 +135,8 @@ impl Fetcher {
             ))
             .pool_idle_timeout(Duration::from_secs(30))
             .build()?;
-        let permits = tokio::sync::Semaphore::new(settings.max_concurrency.max(1));
+        let permits =
+            std::sync::Arc::new(tokio::sync::Semaphore::new(settings.max_concurrency.max(1)));
         let cache = cache::Cache::new(settings.cache_ttl(), settings.cache_bytes);
         Ok(Fetcher {
             settings,
@@ -195,9 +196,10 @@ impl Fetcher {
             return Ok(cached);
         }
 
-        let _permit = self
+        let permit = self
             .permits
-            .acquire()
+            .clone()
+            .acquire_owned()
             .await
             .map_err(|_| FetchError::Network("fetcher is shutting down".into()))?;
 
@@ -227,7 +229,8 @@ impl Fetcher {
         // Extraction is CPU-bound and its types are not `Send`, so it runs on a
         // blocking thread with the body moved in and a plain `Page` returned. The
         // caller waits at most `fetch.timeout` for it, so a pathological document
-        // cannot hold a fetch open; the abandoned thread finishes on its own.
+        // cannot hold a fetch open. The concurrency permit moves into the thread,
+        // so an abandoned extraction keeps its slot until it actually finishes.
         let kind = body_kind(&content_type, &body)?;
         if kind == Kind::Pdf && truncated {
             return Err(FetchError::Unsupported(
@@ -236,12 +239,15 @@ impl Fetcher {
         }
         let base = final_url.clone();
         let declared = content_type.clone();
-        let page = tokio::task::spawn_blocking(move || match kind {
-            Kind::Html => Ok(extract::read(&decode(&body, &declared, true), &base)),
-            Kind::Text => Ok(extract::Page::text(extract::sanitize(&decode(
-                &body, &declared, false,
-            )))),
-            Kind::Pdf => extract::pdf(&body).map(extract::Page::text),
+        let page = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            match kind {
+                Kind::Html => Ok(extract::read(&decode(&body, &declared, true), &base)),
+                Kind::Text => Ok(extract::Page::text(extract::sanitize(&decode(
+                    &body, &declared, false,
+                )))),
+                Kind::Pdf => extract::pdf(&body).map(extract::Page::text),
+            }
         });
         let page = tokio::time::timeout(self.settings.timeout(), page)
             .await

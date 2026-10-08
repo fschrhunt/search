@@ -97,6 +97,7 @@ grep -q 'host.authorized(presented)' "$http" || bad "request auth no longer chec
 grep -q 'nest_service("/mcp", mcp)' "$http" || bad "MCP is not in the protected router"
 grep -q 'read::<Devices>' "$trust" || bad "device hashes are not reloaded per admission"
 grep -q 'ct_eq' "$trust" || bad "device/code comparison is not constant time"
+grep -q 'pairing.attempts >= 20' "$trust" || bad "pairing attempt bound is missing"
 grep -q 'now >= pairing.expires' "$trust" || bad "pairing expiry check is missing"
 grep -q 'pairing.used = true' "$trust" || bad "pairing codes are not consumed"
 grep -q 'mode(0o600)' "$trust" || bad "trust files are not owner-only"

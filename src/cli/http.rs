@@ -77,7 +77,7 @@ pub async fn serve(
     );
     eprintln!("search: SHA-256 {}", host.fingerprint);
     eprintln!(
-        "search: one-use pairing code {} (expires in 15 minutes)",
+        "search: one-use pairing code {} (expires in 15 minutes; 20 attempts)",
         host.code
     );
     eprintln!(

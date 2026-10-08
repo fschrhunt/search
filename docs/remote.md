@@ -36,16 +36,17 @@ the host. Search verifies it against the supplied certificate before reading
 or sending the code. The TLS handshake then checks the exact leaf pin, hostname,
 validity and signatures using Rustls WebPKI. There is no unverified discovery
 probe. Copying a public certificate once is the explicit trust bootstrap.
-Codes expire after 15 minutes and can enroll one device. A code holds 256
-random bits, so wrong guesses are not counted and cannot lock out pairing.
+Codes expire after 15 minutes, allow at most 20 attempts, and can enroll one
+device.
 On the host, run `search pair-code` to issue another code while the server
 keeps running; use the same `SEARCH_HOME` as the serving process.
 The command prints only the new one-use code and invalidates the previous code.
 The identity and existing device credentials persist.
 
-Only the code hash, creation/expiry timestamps and consumed state are stored
-in owner-only `SEARCH_HOME/trust/pairing.json`. Renewal and admission use the
-same cross-process file lock, and consumption commits before device issuance,
+Only the code hash, creation/expiry timestamps, attempt count and consumed state
+are stored in owner-only `SEARCH_HOME/trust/pairing.json`. Renewal and admission
+use the same cross-process file lock. Failed attempts persist, and consumption
+commits before device issuance,
 so simultaneous requests and process crashes cannot reuse a code. If device
 issuance fails after consumption, run `search pair-code` again. A clock
 earlier than the code's creation time fails closed.

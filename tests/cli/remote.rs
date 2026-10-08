@@ -423,7 +423,7 @@ async fn expired_pairing_code_is_refused_over_https() {
 
 /// A local command renews a live HTTPS host, retaining existing devices; each code admits one device.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pair_code_renews_a_running_host() {
+async fn pair_code_renews_a_running_host_with_persisted_attempts() {
     let fixture = Fixture::new().await;
     let existing = fixture.pair().await;
     let settings = fixture.root.join("host-settings.json");
@@ -447,10 +447,17 @@ async fn pair_code_renews_a_running_host() {
             .json(&serde_json::json!({"code": code, "name": "another"}))
             .send()
     };
-    let superseded = renew();
-    let code = renew();
+    let exhausted = renew();
     // The old startup code cannot be used, even though the server still holds its initial display.
     assert_eq!(pair(fixture.host.code.clone()).await.unwrap().status(), 403);
+    for _ in 0..19 {
+        assert_eq!(pair("wrong".into()).await.unwrap().status(), 403);
+    }
+    let state: serde_json::Value = auth::read(&fixture.host.path.join("pairing.json")).unwrap();
+    assert_eq!(state["attempts"], 20);
+    assert_eq!(pair(exhausted).await.unwrap().status(), 403);
+    let superseded = renew();
+    let code = renew();
     assert_eq!(pair(superseded).await.unwrap().status(), 403);
     let (first, second) = tokio::join!(pair(code.clone()), pair(code.clone()));
     let statuses = [first.unwrap().status(), second.unwrap().status()];
