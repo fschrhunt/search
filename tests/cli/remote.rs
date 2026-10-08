@@ -19,6 +19,10 @@ impl Fixture {
         Self::with_window(std::time::Duration::from_secs(900)).await
     }
     async fn with_window(window: std::time::Duration) -> Self {
+        Self::with_settings(window, 10).await
+    }
+    /// Start a host with a chosen service default to test HTTP limit resolution.
+    async fn with_settings(window: std::time::Duration, max_results: usize) -> Self {
         let root = std::env::temp_dir()
             .canonicalize()
             .unwrap()
@@ -30,6 +34,10 @@ impl Fixture {
         let config = search::core::Config {
             home: root.clone(),
             address: address.to_string(),
+            search: search::core::config::SearchSettings {
+                max_results,
+                ..Default::default()
+            },
             engines: search::core::config::EngineSettings {
                 use_engines: vec!["fixture".into()],
                 config: [("fixture".into(), fixture_engine(&root))].into(),
@@ -337,6 +345,9 @@ fn fixture_engine(root: &std::path::Path) -> serde_json::Value {
         r#"import json, sys
 request = json.load(sys.stdin)
 assert request['version'] == 1
+if request['query'] == 'bounds':
+    json.dump({'results':[{'url':'https://example.invalid/'+str(i),'title':str(i),'snippet':'bounded'} for i in range(request['limit'])]}, sys.stdout)
+    sys.exit(0)
 assert request['query'] == 'needle'
 json.dump({'results':[{'url':'https://example.invalid/needle','title':'Remote needle','snippet':'needle from the remote engine'}]}, sys.stdout)
 "#,
@@ -489,4 +500,106 @@ async fn host_refuses_out_of_bounds_input() {
         .await
         .unwrap();
     assert_eq!(fetch.status(), 400);
+}
+
+/// A duplicate host cannot supersede the running host's admission state before bind succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_serve_preserves_pairing_state() {
+    let fixture = Fixture::new().await;
+    let path = fixture.host.path.join("pairing.json");
+    let before = std::fs::read(&path).unwrap();
+    let settings = fixture.root.join("duplicate-settings.json");
+    std::fs::write(&settings, "{}").unwrap();
+    let address = fixture.url.replace("https://localhost:", "127.0.0.1:");
+    let output = local_command(env!("CARGO_BIN_EXE_search"), &fixture.root)
+        .args([
+            "serve",
+            "-config",
+            settings.to_str().unwrap(),
+            "-address",
+            &address,
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("bind:"));
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    fixture.pair().await;
+}
+
+/// `GET /v1/search` resolves omitted/zero limits to the host default, while an
+/// explicit limit is capped at the shared 50-result ceiling before the host
+/// maximum applies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_search_defaults_and_zero_are_bounded() {
+    for configured in [17, 80] {
+        let fixture = Fixture::with_settings(std::time::Duration::from_secs(900), configured).await;
+        let profile = fixture.pair().await;
+        let client = client_api::client(&profile).unwrap();
+        for suffix in ["", "&limit=0", "&limit=3", "&limit=51"] {
+            let value: serde_json::Value = client
+                .get(format!("{}/v1/search?q=bounds{suffix}", fixture.url))
+                .bearer_auth(&profile.secret)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let expected = match suffix {
+                "&limit=3" => 3,
+                "&limit=51" => configured.min(50),
+                _ => configured,
+            };
+            assert_eq!(
+                value["results"].as_array().unwrap().len(),
+                expected,
+                "configured {configured}, suffix {suffix}"
+            );
+        }
+    }
+}
+
+/// Missing trust is local only beneath safe ancestors, and inspecting it creates no storage.
+#[cfg(unix)]
+#[test]
+fn missing_trust_selection_checks_replacement_boundary() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("search-selection-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let settings = root.join("shared-settings.json");
+    std::fs::write(&settings, r#"{"engines":{"enabled":false}}"#).unwrap();
+    std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let home = root.join("home");
+    let run = || {
+        local_command(env!("CARGO_BIN_EXE_search"), &home)
+            .args(["needle", "-json", "-config", settings.to_str().unwrap()])
+            .output()
+            .unwrap()
+    };
+    assert!(run().status.success());
+    assert!(!home.exists());
+    std::fs::create_dir(&home).unwrap();
+    for mode in [0o775, 0o777] {
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(mode)).unwrap();
+        let output = run();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("protected from foreign writers"));
+        assert!(!home.join("trust").exists());
+    }
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run().status.success());
+    assert!(!home.join("trust").exists());
+    std::os::unix::fs::symlink(home.join("missing"), home.join("trust")).unwrap();
+    assert!(!run().status.success());
+    std::fs::remove_file(home.join("trust")).unwrap();
+    std::fs::remove_dir(&home).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(!run().status.success());
+    assert!(!home.exists());
+    std::fs::remove_dir_all(root).unwrap();
 }

@@ -65,12 +65,32 @@
   code hosts. A panicking engine is reported under its own name.
 - A leading `-config PATH` applies to the command that follows
   (`search -config PATH fetch URL`).
+- Reject every local-use NAT64 address (`64:ff9b:1::/48`): network-specific
+  translation layouts cannot be inferred safely. Public destinations encoded in
+  this range now require the existing explicit private-network override too.
+- Protect Unix trust storage against replacement through writable homes or
+  ancestors, including when no trust directory exists; unsafe storage fails
+  instead of silently selecting local execution. Bind a host's listener before
+  renewing its pairing code, so failed duplicate starts preserve the live code.
+  Windows validates the same boundaries with protected user ACLs.
+- Neutralize terminal and Unicode direction controls in human search/fetch
+  output without modifying JSON data.
+- Follow prompt redirect stubs even when they carry no readable text, preserve
+  the requested URL in `Page.url` (`final_url` names the destination), and fail
+  textless stubs whose redirect cannot be followed as empty.
+- Count each normalized result URL once per engine during reciprocal-rank
+  fusion, so duplicate rows cannot manufacture independent agreement.
+- The CLI's omitted `-limit` uses `search.max_results` instead of a fixed 10,
+  matching the documented default; every surface still caps requests at 50.
+- Count blank-line separators against focused-passage budgets so joined
+  passages fit their character limit.
+
 - Add native x86_64/ARM64 CI and release builds for Linux, macOS, and Windows;
   publish Windows ZIPs and a checksummed PowerShell installer, and test installers
   on their native systems. Use runner-local temporary paths for security tests.
 - Tighten the SSRF guard: refuse the `0.0.0.0/8` "this network" block, local-use
-  NAT64 `64:ff9b:1::/48` addresses that embed a private or reserved IPv4 (RFC
-  8215), and the `3fff::/20` documentation range (RFC 9637), with counterexample
+  NAT64 `64:ff9b:1::/48` (RFC 8215), and the `3fff::/20` documentation range
+  (RFC 9637), with counterexample
   tests beside the existing ones.
 - Follow exactly the configured number of HTTP redirects: a budget of `N` now
   allows `N` redirects, not `N` more taken than intended.

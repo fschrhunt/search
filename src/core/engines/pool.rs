@@ -229,7 +229,8 @@ async fn run_engine(
 
 /// Merge engine answers with reciprocal-rank fusion: each engine votes
 /// `1/(k + rank)`, so a URL several independent engines rank well rises above
-/// one that only a single engine liked. Duplicates collapse by normalized URL.
+/// one that only a single engine liked. Each normalized URL receives at most
+/// one vote per locally stamped engine, using that engine's best rank.
 fn fuse(results: &[Ranked], limit: usize) -> Vec<Link> {
     const K: f64 = 10.0;
     use std::collections::HashMap;
@@ -237,6 +238,7 @@ fn fuse(results: &[Ranked], limit: usize) -> Vec<Link> {
     struct Aggregate {
         link: Link,
         score: f64,
+        ranks: Vec<(String, usize)>,
         order: usize,
     }
 
@@ -251,38 +253,43 @@ fn fuse(results: &[Ranked], limit: usize) -> Vec<Link> {
         // merge — not from this concatenation's position, which would penalize
         // whichever engine happened to be appended later.
         let rank = ranked.rank.max(1);
-        let vote = 1.0 / (K + rank as f64);
-        match seen.get_mut(&key) {
-            Some(existing) => {
-                let incoming = &ranked.link;
-                existing.score += vote;
-                if existing.link.snippet.is_none() {
-                    existing.link.snippet = incoming.snippet.clone();
-                }
-                if existing.link.title.is_empty() && !incoming.title.is_empty() {
-                    existing.link.title = incoming.title.clone();
-                }
-                for engine in &incoming.engines {
-                    if !existing.link.engines.contains(engine) {
-                        existing.link.engines.push(engine.clone());
-                    }
-                }
+        let existing = seen.entry(key).or_insert_with(|| {
+            let aggregate = Aggregate {
+                link: ranked.link.clone(),
+                score: 0.0,
+                ranks: Vec::new(),
+                order,
+            };
+            order += 1;
+            aggregate
+        });
+        let incoming = &ranked.link;
+        if existing.link.snippet.is_none() {
+            existing.link.snippet = incoming.snippet.clone();
+        }
+        if existing.link.title.is_empty() && !incoming.title.is_empty() {
+            existing.link.title = incoming.title.clone();
+        }
+        for engine in &incoming.engines {
+            if let Some((_, best)) = existing.ranks.iter_mut().find(|(name, _)| name == engine) {
+                *best = (*best).min(rank);
+            } else {
+                existing.ranks.push((engine.clone(), rank));
             }
-            None => {
-                seen.insert(
-                    key,
-                    Aggregate {
-                        link: ranked.link.clone(),
-                        score: vote,
-                        order,
-                    },
-                );
-                order += 1;
+            if !existing.link.engines.contains(engine) {
+                existing.link.engines.push(engine.clone());
             }
         }
     }
 
     let mut out: Vec<Aggregate> = seen.into_values().collect();
+    for aggregate in &mut out {
+        aggregate.score = aggregate
+            .ranks
+            .iter()
+            .map(|(_, rank)| 1.0 / (K + *rank as f64))
+            .sum();
+    }
     out.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -622,6 +629,59 @@ mod tests {
             out[0].url, "https://second.example/b",
             "the rank-1 link wins even though it was merged second"
         );
+    }
+
+    /// Repeated rows and noisy URL variants cannot manufacture engine agreement.
+    #[test]
+    fn fusion_counts_one_vote_per_engine_and_normalized_url() {
+        for duplicate in [
+            "https://b.example/y",
+            "https://b.example/y/?utm_source=noise#section",
+        ] {
+            let merged = vec![
+                ranked("https://a.example/x", "one", 1),
+                ranked("https://b.example/y", "one", 2),
+                ranked(duplicate, "one", 3),
+            ];
+            let out = fuse(&merged, 10);
+            assert_eq!(out.len(), 2);
+            assert_eq!(out[0].url, "https://a.example/x");
+            assert_eq!(out[1].score, 1.0 / 12.0);
+            assert_eq!(out[1].engines, ["one"]);
+        }
+    }
+
+    /// A distinct engine still supplies an independent vote after deduplication.
+    #[test]
+    fn fusion_independent_engine_adds_vote_after_duplicate_rows() {
+        let merged = vec![
+            ranked("https://a.example/x", "one", 1),
+            ranked("https://b.example/y", "one", 2),
+            ranked("https://b.example/y#duplicate", "one", 3),
+            ranked("https://b.example/y?utm_source=other", "two", 3),
+        ];
+        let out = fuse(&merged, 1);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].url, "https://b.example/y");
+        assert_eq!(out[0].score, 1.0 / 12.0 + 1.0 / 13.0);
+        assert_eq!(out[0].engines, ["one", "two"]);
+    }
+
+    /// Later better ranks replace votes, while first-seen order and metadata merge survive.
+    #[test]
+    fn fusion_keeps_best_rank_and_merges_metadata_on_duplicate_rows() {
+        let mut first = ranked("https://b.example/y", "one", 5);
+        first.link.title.clear();
+        let mut better = ranked("https://b.example/y#section", "one", 1);
+        better.link.title = "Filled title".into();
+        better.link.snippet = Some("Filled snippet".into());
+        let merged = vec![first, ranked("https://a.example/x", "one", 1), better];
+        let out = fuse(&merged, 10);
+        assert_eq!(out[0].url, "https://b.example/y");
+        assert_eq!(out[0].score, out[1].score);
+        assert_eq!(out[0].score, 1.0 / 11.0);
+        assert_eq!(out[0].title, "Filled title");
+        assert_eq!(out[0].snippet.as_deref(), Some("Filled snippet"));
     }
 
     /// A engine name that is a substring of another must not dedupe as if it

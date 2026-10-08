@@ -11,9 +11,65 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 
+/// Check existing replacement boundaries without creating storage or requiring private settings.
+#[cfg(unix)]
+fn trusted_ancestors(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+    {
+        return Err("trust storage requires an absolute path without parent traversal".into());
+    }
+    // SAFETY: geteuid takes no arguments and does not dereference memory.
+    let uid = unsafe { libc::geteuid() };
+    // Root ownership also represents the system user in UID-mapped namespaces.
+    let root_uid = fs::metadata("/").map_err(|e| e.to_string())?.uid();
+    let mut prefix = PathBuf::new();
+    for part in path.components() {
+        prefix.push(part);
+        let meta = match fs::symlink_metadata(&prefix) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e.to_string()),
+        };
+        // Sticky system directories protect owner-owned children from replacement.
+        let sticky_system = prefix != path && meta.uid() == root_uid && meta.mode() & 0o1000 != 0;
+        if !meta.is_dir()
+            || (meta.uid() != uid && meta.uid() != root_uid)
+            || (meta.mode() & 0o022 != 0 && !sticky_system)
+        {
+            return Err("trust storage requires ancestors protected from foreign writers".into());
+        }
+    }
+    Ok(())
+}
+
+/// Windows validates ancestor replacement permissions without creating storage.
+#[cfg(windows)]
+fn trusted_ancestors(path: &Path) -> Result<(), String> {
+    crate::private_fs::trusted_ancestors(path)
+}
+
+/// Inspect trust before local fallback; absence is safe only under protected ancestors.
+pub fn existing_dir(root: &Path) -> Result<Option<PathBuf>, String> {
+    trusted_ancestors(root)?;
+    let path = root.join("trust");
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+        Ok(_) => {
+            check(&path, true)?;
+            Ok(Some(path))
+        }
+    }
+}
+
 /// Credentials and pairing state live privately under the Search home.
 #[cfg(unix)]
 pub fn dir(root: &Path) -> Result<PathBuf, String> {
+    trusted_ancestors(root)?;
     let mut root_builder = fs::DirBuilder::new();
     root_builder.recursive(true);
     #[cfg(unix)]
@@ -24,6 +80,7 @@ pub fn dir(root: &Path) -> Result<PathBuf, String> {
     root_builder
         .create(root)
         .map_err(|_| "cannot create Search home".to_string())?;
+    trusted_ancestors(root)?;
     let root_meta = fs::symlink_metadata(root).map_err(|e| e.to_string())?;
     if !root_meta.is_dir() {
         return Err("trust root must be a real directory".into());
@@ -93,6 +150,9 @@ fn check_owner(meta: &fs::Metadata) -> Result<(), String> {
 #[cfg(unix)]
 fn private_open(path: &Path, create_new: bool, create: bool) -> Result<File, String> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let parent = path.parent().ok_or("trust file has no parent")?;
+    trusted_ancestors(parent)?;
+    check(parent, true)?;
     let file = fs::OpenOptions::new()
         .read(true)
         .write(create_new || create)
@@ -125,8 +185,13 @@ fn private_open(path: &Path, create_new: bool, create: bool) -> Result<File, Str
 
 /// Read a protected JSON file, treating only absence as an empty registry.
 pub fn read<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T, String> {
-    #[cfg(windows)]
-    crate::private_fs::trusted_ancestors(path.parent().ok_or("trust file has no parent")?)?;
+    let parent = path.parent().ok_or("trust file has no parent")?;
+    trusted_ancestors(parent)?;
+    match fs::symlink_metadata(parent) {
+        Ok(_) => check(parent, true)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.to_string()),
+    }
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(e.to_string()),
@@ -164,6 +229,8 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         drop(file);
         #[cfg(windows)]
         crate::private_fs::replace(&temp, path)?;
+        #[cfg(unix)]
+        trusted_ancestors(path.parent().ok_or("trust file has no parent")?)?;
         #[cfg(unix)]
         fs::rename(&temp, path).map_err(|e| e.to_string())?;
         #[cfg(unix)]
@@ -403,6 +470,40 @@ mod tests {
         assert!(host.pair(&host.code, "superseded").is_err());
         assert!(host.pair(&current, "renewed").is_ok());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Writable replacement boundaries invalidate existing trust and direct file operations.
+    #[cfg(unix)]
+    #[test]
+    fn writable_trust_ancestors_fail_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let ancestor = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("search-ancestors-{}", uuid::Uuid::new_v4()));
+        let root = ancestor.join("home");
+        let private = dir(&root).unwrap();
+        let file = private.join("remotes.json");
+        write(&file, br#"{"remotes":{}}"#).unwrap();
+        for boundary in [&root, &ancestor] {
+            for mode in [0o775, 0o777] {
+                fs::set_permissions(boundary, fs::Permissions::from_mode(mode)).unwrap();
+                assert!(dir(&root).is_err());
+                assert!(existing_dir(&root).is_err());
+                assert!(read::<Remotes>(&file).is_err());
+                assert!(read::<Remotes>(&private.join("absent.json")).is_err());
+                assert!(update(&file, |_: &mut Remotes| Ok(())).is_err());
+                assert!(write(&file, br#"{"remotes":{}}"#).is_err());
+                assert_eq!(fs::read(&file).unwrap(), br#"{"remotes":{}}"#);
+            }
+            fs::set_permissions(boundary, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(read::<Remotes>(&file).is_ok());
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(existing_dir(&root).is_err());
+        assert!(read::<Remotes>(&private.join("absent.json")).is_err());
+        fs::remove_dir_all(ancestor).unwrap();
     }
 
     /// Unsafe and malformed persisted credentials are errors rather than empty state.

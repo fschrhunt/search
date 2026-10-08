@@ -55,7 +55,10 @@ fetch cache; `max_redirects: 0` follows no redirects.
 - `address` selects the listener. `user_agent` overrides page-fetch and HTTP-engine identity;
   by default it identifies Search and its version.
 - `search.engine_timeout` bounds one engine; `search.timeout` bounds the whole
-  query (defaults: 5000 ms and 8000 ms). `max_results` caps returned results.
+  query (defaults: 5000 ms and 8000 ms). `max_results` is the default result count
+  when a request omits its limit, and caps explicit limits. HTTP and MCP also
+  cap requests at 50 results. With a selected remote, the host's setting supplies
+  the default rather than the client's.
 - `remote.max_response_bytes` caps a paired host's JSON response (default 64 MiB).
   Raise it for larger full-page batches; exceeding it returns an error, never a
   local fallback. `remote.timeout` bounds the entire request.
@@ -88,6 +91,15 @@ there is no automatic migration or deletion.
 Remove `dir`, `search.local_weight`, `fetch.max_stored_chars`, and the entire
 `index` object from settings: these fields are rejected. `DIR` and `-dir` are
 removed corpus overrides. Use `SEARCH_HOME` for settings and trust.
+
+Unix trust storage now rejects homes and ancestors writable by other users,
+including before a clean local startup. Remove group/other write permissions
+from directories you own, or choose a private `SEARCH_HOME`; Search does not
+repair permissions automatically. Settings can still be shared read-only.
+The fetch and HTTP-engine guards now reject all `64:ff9b:1::/48` local-use NAT64
+addresses, even those that appear to encode public IPv4 destinations. Prefer
+publicly addressable endpoints; the existing explicit private-network overrides
+still disable the respective guards and should be used only in trusted deployments.
 
 Request selection and result attribution use `engines`; replace `providers`
 and the CLI `-providers` flag with `engines` and `-engines`.

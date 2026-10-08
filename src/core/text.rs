@@ -79,8 +79,9 @@ pub fn focus(mut page: Page, focus: &Focus) -> FocusedPage {
 }
 
 /// Rank the paragraphs of `text` against `query`, returning the best ones up to
-/// a character budget, in document order. With an empty query, or when nothing
-/// matches, the opening of the document is returned with score zero.
+/// a character budget including blank-line separators, in document order. With
+/// an empty query, or when nothing matches, the opening of the document is
+/// returned with score zero.
 pub fn select(text: &str, query: &str, budget: usize) -> Vec<Passage> {
     if budget == 0 {
         return Vec::new();
@@ -144,17 +145,21 @@ pub fn select(text: &str, query: &str, budget: usize) -> Vec<Passage> {
     });
 
     // Choose the best paragraphs that fit, then present them in reading order.
+    // Joined passages are separated by blank lines, so reserve those two
+    // characters per passage; otherwise the joined text exceeds the budget.
     let mut chosen: Vec<(usize, f64, String)> = Vec::new();
     let mut used = 0usize;
     for (index, score) in scored {
-        if used >= budget {
+        let separator = if chosen.is_empty() { 0 } else { 2 };
+        let remaining = budget.saturating_sub(used).saturating_sub(separator);
+        if remaining == 0 {
             break;
         }
         let Some(paragraph) = paragraphs.get(index) else {
             continue;
         };
-        let selected = head(paragraph, budget - used);
-        used += selected.chars().count();
+        let selected = head(paragraph, remaining);
+        used += separator + selected.chars().count();
         chosen.push((index, score, selected));
     }
     chosen.sort_by_key(|(index, _, _)| *index);
@@ -271,8 +276,21 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         let passages = select(&text, "keyword", 400);
-        let total: usize = passages.iter().map(|p| p.text.chars().count()).sum();
+        let total = passages
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+            .chars()
+            .count();
         assert!(total <= 400, "budget exceeded: {total}");
+    }
+
+    #[test]
+    fn a_budget_that_cannot_fit_another_separator_stops() {
+        let passages = select("keyword\n\nkeyword again", "keyword", 8);
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].text, "keyword");
     }
 
     /// Non-ASCII letters are folded like ASCII ones, so mixed-case accents match.

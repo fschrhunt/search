@@ -17,6 +17,9 @@ assumes it is hostile:
 - **Every IPv6 form that embeds such an IPv4 is refused**, including NAT64
   (`64:ff9b::/96`), 6to4 (`2002::/16`), and IPv4-compatible (`::/96`), and the
   bracketed forms `url` produces.
+- **Local-use NAT64 is refused entirely.** `64:ff9b:1::/48` (RFC 8215) permits
+  network-specific translation layouts; a public-looking prefix can translate
+  to a private IPv4 destination. Search cannot safely infer those layouts.
 - **Redirects are re-checked per hop**, bounded by `max_redirects`. A
   client-side `<meta http-equiv="refresh">` redirect is followed only through
   the same guard, so page content cannot steer the fetcher inside the network.
@@ -52,9 +55,12 @@ A fetched page is untrusted content, and the cheapest place to hide an
 instruction aimed at a model is text a person never sees. Extraction removes
 visually hidden text — inline `display:none`/`visibility:hidden`/`opacity:0`,
 the `hidden` attribute, `aria-hidden`, screen-reader class names, and off-screen
-positioning — and neutralizes links and images, so page content cannot form a
-markdown image that exfiltrates. The remaining text is passed to the model as
-data, in a clearly delimited field.
+positioning — and neutralizes Markdown link/image targets, including nested
+syntax and non-HTML text responses. The remaining text is passed to the model
+as data, in a clearly delimited field. This is defense in depth, not a guarantee
+against prompt injection; consumers must not interpret source text as instructions.
+Human CLI output also strips terminal control characters from untrusted fields;
+JSON retains the original data.
 
 Search can fetch public pages and caches recent pages transiently in memory.
 Paired devices are trusted to initiate searches and fetches; extracted content
@@ -79,6 +85,11 @@ Browser Origin headers are refused. Trust files are owner-only and separate
 from settings; a corrupt registry fails closed. See [remote](remote.md).
 
 Unix private storage uses current-user ownership and restrictive permissions.
+Search also refuses trust storage whose home or ancestors permit replacement
+by other users. This check applies before accepting an absent trust directory
+as local mode. Root-owned sticky temporary directories are allowed with private
+user-owned descendants. Shareable settings may remain readable by other users;
+the storage boundary must not be writable by them.
 Windows uses protected current-user DACLs, validates security on opened handles,
 and rejects reparse points/junctions and hard-linked private files. Use a local
 NTFS location; network shares and filesystems without these guarantees are not

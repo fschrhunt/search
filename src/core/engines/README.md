@@ -15,7 +15,9 @@ in `core::config::engines`, resolved exactly like custom engines.
 `EngineSettings::adapter`, which merges a preset with its `engines.config` entry
 (or takes a custom entry as is), validates it, and gives command engines an
 absolute `cwd`. Construction reads no credentials and runs no engine code; HTTP
-engines build one guarded client each and reuse it.
+engines build one guarded client each and reuse it. Reciprocal-rank fusion
+counts each normalized URL once per engine, using its best rank; duplicate rows
+cannot substitute for agreement between engines.
 
 Adapters map an upstream JSON answer into `Found`. An invalid row (empty title,
 missing or non-HTTP(S) URL, URL credentials, non-text snippet) is skipped and

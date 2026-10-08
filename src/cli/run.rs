@@ -6,6 +6,7 @@ use crate::client::Client;
 use crate::core::config;
 use crate::core::Search;
 
+use crate::cli::render::error as report_error;
 use crate::cli::{args::Command, http, stdio};
 
 /// Run one parsed command. Returns the process exit code.
@@ -90,6 +91,7 @@ async fn search_command(
     }
 }
 
+/// Fetch clean pages through the selected client and render bounded excerpts.
 async fn fetch_command(
     urls: Vec<String>,
     query: Option<String>,
@@ -130,11 +132,6 @@ async fn fetch_command(
     } else {
         rendered
     }
-}
-
-fn report_error(error: String) -> i32 {
-    eprintln!("search: {error}");
-    1
 }
 
 /// Select a remote before opening the local engine; selected failures are errors.

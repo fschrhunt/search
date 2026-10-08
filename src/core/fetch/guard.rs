@@ -4,8 +4,10 @@
 //! classifies an address as private when it can reach infrastructure — loopback,
 //! the 0/8 "this network" block, RFC1918, link-local (including cloud metadata),
 //! CGNAT, multicast, unique local, documentation, and every IPv6 form that
-//! embeds such an IPv4 (NAT64 well-known and local-use, 6to4, IPv4-mapped, and
-//! IPv4-compatible). Name-based hosts are checked by name, and a custom
+//! embeds such an IPv4 (NAT64 well-known, 6to4, IPv4-mapped, and
+//! IPv4-compatible). Local-use NAT64 is refused entirely: its translation
+//! layout is network-specific and cannot be inferred from the address.
+//! Name-based hosts are checked by name, and a custom
 //! reqwest resolver re-checks every address at connect time, so a name that
 //! resolves inside the network — or a DNS answer that changes between the check
 //! and the dial (rebinding) — is refused before a socket is opened.
@@ -209,16 +211,11 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         );
         return is_public_v4(embedded);
     }
-    // Local-use NAT64 64:ff9b:1::/48 (RFC 8215) embeds the IPv4 in bits 48..80,
-    // so a loopback or metadata address can be reached through the gateway.
+    // RFC 8215 reserves this range for network-specific translation mechanisms,
+    // including /64 and /96 prefixes. No fixed offset identifies the destination
+    // IPv4, so refuse the whole local-use range rather than guess its layout.
     if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001 {
-        let embedded = Ipv4Addr::new(
-            (segments[3] >> 8) as u8,
-            segments[3] as u8,
-            (segments[4] >> 8) as u8,
-            segments[4] as u8,
-        );
-        return is_public_v4(embedded);
+        return false;
     }
     // 6to4 2002::/16 embeds the IPv4 in the next 32 bits.
     if segments[0] == 0x2002 {
@@ -277,23 +274,23 @@ mod tests {
             "fc00::1",
             "fe80::1",
             // IPv6 forms that embed a blocked IPv4.
-            "64:ff9b::7f00:1",       // NAT64 -> 127.0.0.1
-            "64:ff9b::a9fe:a9fe",    // NAT64 -> 169.254.169.254
-            "64:ff9b::6440:1",       // NAT64 -> 100.64.0.1 (CGNAT)
-            "64:ff9b::cb00:7105",    // NAT64 -> 203.0.113.5 (TEST-NET-3)
-            "64:ff9b:1:7f00:1::",    // local-use NAT64 -> 127.0.0.1
-            "64:ff9b:1:a9fe:a9fe::", // local-use NAT64 -> 169.254.169.254
-            "64:ff9b:1:6440:1::",    // local-use NAT64 -> 100.64.0.1 (CGNAT)
-            "64:ff9b:1:cb00:7105::", // local-use NAT64 -> 203.0.113.5 (TEST-NET-3)
-            "2002:7f00:1::",         // 6to4 -> 127.0.0.1
-            "2002:a9fe:a9fe::",      // 6to4 -> 169.254.169.254
-            "2002:6440:1::",         // 6to4 -> 100.64.0.1 (CGNAT)
-            "2002:cb00:7105::",      // 6to4 -> 203.0.113.5 (TEST-NET-3)
-            "::ffff:127.0.0.1",      // IPv4-mapped loopback
-            "::127.0.0.1",           // IPv4-compatible
-            "2001::1",               // Teredo
-            "2001:db8::1",           // documentation
-            "3fff::1",               // documentation (RFC 9637)
+            "64:ff9b::7f00:1",          // NAT64 -> 127.0.0.1
+            "64:ff9b::a9fe:a9fe",       // NAT64 -> 169.254.169.254
+            "64:ff9b::6440:1",          // NAT64 -> 100.64.0.1 (CGNAT)
+            "64:ff9b::cb00:7105",       // NAT64 -> 203.0.113.5 (TEST-NET-3)
+            "64:ff9b:1:7f00:0:100::",   // local-use /48 NAT64 -> 127.0.0.1
+            "64:ff9b:1:a9fe:a9:fe00::", // local-use /48 NAT64 -> 169.254.169.254
+            "64:ff9b:1:6440:0:100::",   // local-use /48 NAT64 -> 100.64.0.1 (CGNAT)
+            "64:ff9b:1:cb00:71:500::",  // local-use /48 NAT64 -> 203.0.113.5 (TEST-NET-3)
+            "2002:7f00:1::",            // 6to4 -> 127.0.0.1
+            "2002:a9fe:a9fe::",         // 6to4 -> 169.254.169.254
+            "2002:6440:1::",            // 6to4 -> 100.64.0.1 (CGNAT)
+            "2002:cb00:7105::",         // 6to4 -> 203.0.113.5 (TEST-NET-3)
+            "::ffff:127.0.0.1",         // IPv4-mapped loopback
+            "::127.0.0.1",              // IPv4-compatible
+            "2001::1",                  // Teredo
+            "2001:db8::1",              // documentation
+            "3fff::1",                  // documentation (RFC 9637)
         ];
         for address in private {
             assert!(!is_public_ip(ip(address)), "{address} should be private");
@@ -310,11 +307,28 @@ mod tests {
             "2606:4700:4700::1111",
             "2606:4700::6810:85e5",
             "::ffff:8.8.8.8",
-            // A transition form with a public embedded address is allowed.
-            "64:ff9b:1:101:101::", // local-use NAT64 -> 1.1.1.1
+            // The well-known translation layout can safely classify its IPv4.
+            "64:ff9b::101:101", // well-known NAT64 -> 1.1.1.1
         ];
         for address in public {
             assert!(is_public_ip(ip(address)), "{address} should be public");
+        }
+    }
+
+    /// Local-use layouts cannot be guessed, even when prefix bits resemble public IPv4.
+    #[test]
+    fn local_use_nat64_is_refused_for_every_translation_layout() {
+        for address in [
+            "64:ff9b:1:cb00:71:500::", // /48 -> documentation IPv4, with the reserved u octet
+            "64:ff9b:1:8a9:fe:a9fe::", // /56 -> metadata
+            "64:ff9b:1:808:a9:fea9:fe00:0", // /64 -> metadata
+            "64:ff9b:1:808:8:0:a9fe:a9fe", // /96 -> metadata
+            "64:ff9b:1:808:8:0:7f00:1", // /96 -> loopback
+            "64:ff9b:1:808:8:0:101:101", // also refuse an apparently public destination
+        ] {
+            assert!(!is_public_ip(ip(address)), "{address} should be refused");
+            assert!(check_host(&format!("[{address}]"), false).is_err());
+            assert!(allowed_addresses("translation.example", [ip(address)], false).is_err());
         }
     }
 
@@ -332,7 +346,7 @@ mod tests {
             "[::1]",
             "[::ffff:127.0.0.1]",
             "[64:ff9b::a9fe:a9fe]",
-            "[64:ff9b:1:7f00:1::]",
+            "[64:ff9b:1:7f00:0:100::]",
             "[2002:7f00:1::]",
             "[3fff::1]",
         ] {
@@ -346,6 +360,7 @@ mod tests {
     fn allow_private_networks_disables_the_guard_only_when_asked() {
         assert!(check_host("127.0.0.1", true).is_ok());
         assert!(check_host("localhost", true).is_ok());
+        assert!(check_host("[64:ff9b:1:808:8:0:a9fe:a9fe]", true).is_ok());
     }
 
     /// The resolver-level check is what closes rebinding: a name that resolves

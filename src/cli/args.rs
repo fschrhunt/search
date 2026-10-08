@@ -29,6 +29,7 @@ pub enum Command {
     /// Search the web, printing results for a person or JSON for a script.
     Search {
         query: String,
+        /// Zero lets the selected service use its configured result maximum.
         limit: usize,
         json: bool,
         engines: Vec<String>,
@@ -278,7 +279,7 @@ fn parse_config_flag<I: IntoIterator<Item = String>>(args: I) -> Result<Option<S
 
 fn parse_search<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String> {
     let mut query_words = Vec::new();
-    let mut limit = 10usize;
+    let mut limit = 0usize;
     let mut json = false;
     let mut engines = Vec::new();
     let mut config = None;
@@ -504,7 +505,7 @@ mod tests {
             parse(args(&["--", "test", "-engines", "literal"])).unwrap(),
             Command::Search {
                 query: "test -engines literal".into(),
-                limit: 10,
+                limit: 0,
                 json: false,
                 engines: vec![],
                 config: None,
@@ -538,6 +539,20 @@ mod tests {
                 config: None,
             }
         );
+    }
+
+    #[test]
+    fn search_limits_default_to_settings_and_preserve_explicit_values() {
+        assert!(matches!(
+            parse(args(&["rust"])).unwrap(),
+            Command::Search { limit: 0, .. }
+        ));
+        for limit in ["0", "1", "75"] {
+            assert!(matches!(
+                parse(args(&["rust", "-limit", limit])).unwrap(),
+                Command::Search { limit: parsed, .. } if parsed == limit.parse::<usize>().unwrap()
+            ));
+        }
     }
 
     #[test]

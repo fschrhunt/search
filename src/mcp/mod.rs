@@ -260,6 +260,7 @@ mod tests {
         assert!(validate_queries(Vec::new()).is_err());
         assert!(validate_queries(vec!["rust".into(); 6]).is_err());
         assert!(validate_queries(vec!["rust".into(), " ".into()]).is_err());
+        assert!(validate_queries(vec!["x".repeat(513)]).is_err());
     }
 
     #[test]
