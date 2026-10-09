@@ -34,7 +34,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 dom_smoothie = "0.18"
 dom_query = "0.28"
 encoding_rs = "0.8"
-pdf-extract = "0.10"
+pdf-extract = "0.12"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.11"
