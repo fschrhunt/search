@@ -97,8 +97,8 @@ configuration file. The client process must be able to find `search` on its
 }
 ```
 
-The server exposes `web_search`, `web_fetch`, `web_research`, `web_crawl`, and
-`web_map`. Machine reads are bounded by default with explicit full-page opt-in.
+The server exposes `find`, `fetch`, `research`, `crawl`, and `map`. Machine reads
+are bounded by default with explicit full-page opt-in.
 For a shared host, select a paired remote; the agent configuration stays the same.
 
 ## One engine, more surfaces

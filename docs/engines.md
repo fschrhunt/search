@@ -101,7 +101,7 @@ example. Its mappings are illustrative, not a universal AI API schema; see
 [how to adapt it](#adapting-the-json-post-example). Slower services may also need
 the [Search deadlines](#operations-and-troubleshooting) raised before testing.
 Return source links and useful snippets/highlights, rather than final answer prose;
-`web_fetch` remains the clean full-page reader. Search handles concurrent execution,
+`fetch` remains the clean full-page reader. Search handles concurrent execution,
 deadlines, output validation, URL deduplication, ranking, and per-engine failures.
 Enable multiple engines to merge results, or restrict a query with `-engines A,B`.
 

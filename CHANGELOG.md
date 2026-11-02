@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **MCP tools take the CLI's names:** `find`, `fetch`, `research`, `crawl` and `map`
+  (were `web_search`, `web_fetch`, `web_research`, `web_crawl`, `web_map`). Clients and
+  routers already prefix the server name, so they read `search.fetch` rather than
+  `search.web_fetch`. Update any configuration that names the old tools.
 - Release automation proposes Homebrew formula updates through reviewed PRs.
 - Update installation, Homebrew, documentation, and repository contact URLs for
   the move to `fschrhunt/search`; existing settings and protocols stay compatible.

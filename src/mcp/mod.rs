@@ -109,7 +109,7 @@ impl From<CrawlArgs> for CrawlRequest {
     }
 }
 
-/// Arguments for `web_search`.
+/// Arguments for `find`.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchArgs {
@@ -128,7 +128,7 @@ pub struct SearchArgs {
     pub engines: Option<Vec<String>>,
 }
 
-/// Arguments for `web_fetch`.
+/// Arguments for `fetch`.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FetchArgs {
@@ -185,7 +185,7 @@ impl From<ResearchOptionsArgs> for ResearchOptions {
     }
 }
 
-/// Arguments for `web_research`.
+/// Arguments for `research`.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResearchArgs {
@@ -262,10 +262,10 @@ impl Server {
     }
 
     #[tool(
-        name = "web_search",
-        description = "Search the live web using the selected engines. Returns ranked titles, URLs, snippets, and engine status. Read relevant pages with web_fetch; use web_fetch directly when you already have a URL."
+        name = "find",
+        description = "Search the live web using the selected engines. Returns ranked titles, URLs, snippets, and engine status. Read relevant pages with fetch; use fetch directly when you already have a URL."
     )]
-    async fn web_search(
+    async fn find(
         &self,
         Parameters(args): Parameters<SearchArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -291,10 +291,10 @@ impl Server {
     }
 
     #[tool(
-        name = "web_fetch",
+        name = "fetch",
         description = "Read one or more public URLs (HTML, text or PDF) as clean text. By default returns a bounded character window using host settings. Pass full to read all text; links opts in to link discovery. Pass a query for relevant excerpts, or max_characters to read a window; a page that continues reports next_offset, which you pass back as offset to read on. Private and link-local addresses are refused."
     )]
-    async fn web_fetch(
+    async fn fetch(
         &self,
         Parameters(args): Parameters<FetchArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -312,10 +312,10 @@ impl Server {
     }
 
     #[tool(
-        name = "web_research",
-        description = "Research a question end to end: run one to five intents, read the best distinct sources, and return a bounded, cited packet of dated passages with a coverage report. Use this instead of chaining web_search and web_fetch when you need evidence to ground an answer. Private and link-local addresses are refused."
+        name = "research",
+        description = "Research a question end to end: run one to five intents, read the best distinct sources, and return a bounded, cited packet of dated passages with a coverage report. Use this instead of chaining find and fetch when you need evidence to ground an answer. Private and link-local addresses are refused."
     )]
-    async fn web_research(
+    async fn research(
         &self,
         Parameters(args): Parameters<ResearchArgs>,
         extensions: rmcp::model::Extensions,
@@ -364,10 +364,10 @@ impl Server {
         json_result(packet)
     }
     #[tool(
-        name = "web_crawl",
+        name = "crawl",
         description = "Crawl a bounded same-origin public site, respecting robots and host limits. Returns clean pages, URL inventory and explicit failures. Private addresses are refused."
     )]
-    async fn web_crawl(
+    async fn crawl(
         &self,
         Parameters(args): Parameters<CrawlArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -376,10 +376,10 @@ impl Server {
     }
 
     #[tool(
-        name = "web_map",
+        name = "map",
         description = "Map a bounded same-origin public site, respecting robots and host limits. Returns URL inventory and failures without page prose. Private addresses are refused."
     )]
-    async fn web_map(
+    async fn map(
         &self,
         Parameters(args): Parameters<CrawlArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -413,8 +413,8 @@ impl ServerHandler for Server {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("search", crate::VERSION))
             .with_instructions(
-                "Search the live web and read pages. Use web_search to find sources, \
-                 web_fetch to read the ones that matter, and web_research to gather a \
+                "Search the live web and read pages. Use find to discover sources, \
+                 fetch to read the ones that matter, and research to gather a \
                  bounded, cited packet of evidence for a question in one call. Results \
                  report which engines answered, so an empty answer is never mistaken for \
                  a broken one.",
@@ -491,7 +491,7 @@ mod tests {
             .join("search-full-fetch");
         let server = Server::new(Arc::new(Search::open(config)?));
         let answer = server
-            .web_fetch(Parameters(FetchArgs {
+            .fetch(Parameters(FetchArgs {
                 urls: vec![url],
                 full: true,
                 query: None,
@@ -533,7 +533,7 @@ mod tests {
         .unwrap();
         let server = Server::new(Arc::new(Search::open(config).unwrap()));
         let error = server
-            .web_fetch(Parameters(FetchArgs {
+            .fetch(Parameters(FetchArgs {
                 urls: vec!["https://example.com/".into()],
                 full: true,
                 query: Some("example".into()),
@@ -565,7 +565,7 @@ mod tests {
         }))?;
         let server = Server::new(Arc::new(Search::open(config)?));
         let answer = server
-            .web_search(Parameters(SearchArgs {
+            .find(Parameters(SearchArgs {
                 queries: vec!["custom query".into()],
                 limit: None,
                 engines: Some(vec!["custom".into()]),
@@ -589,7 +589,7 @@ mod tests {
         Ok(())
     }
 
-    /// `web_research` returns one packet: the intent, the leads, and an honest
+    /// `research` returns one packet: the intent, the leads, and an honest
     /// coverage report even when every fetch fails.
     #[tokio::test]
     async fn web_research_returns_a_bounded_packet() -> Result<(), Box<dyn std::error::Error>> {
@@ -602,7 +602,7 @@ mod tests {
         }))?;
         let server = Server::new(Arc::new(Search::open(config)?));
         let answer = server
-            .web_research(
+            .research(
                 Parameters(ResearchArgs {
                     queries: vec!["q".into()],
                     sources: None,
