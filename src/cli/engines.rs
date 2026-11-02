@@ -110,7 +110,12 @@ pub async fn command(
 fn list(settings: &Config, json: bool) -> Result<(), String> {
     let engines = &settings.engines;
     let mut ids: Vec<String> = PRESETS.iter().map(|preset| preset.id.to_owned()).collect();
-    for id in engines.config.keys().chain(&engines.use_engines) {
+    for id in engines
+        .config
+        .keys()
+        .chain(&engines.use_engines)
+        .chain(&engines.fallback)
+    {
         if !ids.contains(id) {
             ids.push(id.clone());
         }
@@ -124,6 +129,7 @@ fn list(settings: &Config, json: bool) -> Result<(), String> {
                 "builtin": Preset::find(id).is_some(),
                 "type": definition.as_ref().and_then(|d| d.get("type")).cloned(),
                 "selected": engines.use_engines.contains(id),
+                "fallback": engines.fallback.contains(id),
                 "status": status(settings, id),
             })
         })
@@ -139,7 +145,7 @@ fn list(settings: &Config, json: bool) -> Result<(), String> {
                 .unwrap_or("-")
                 .to_owned()
         };
-        let selected = row.get("selected").and_then(Value::as_bool) == Some(true);
+        let flag = |key: &str| row.get(key).and_then(Value::as_bool) == Some(true);
         let origin = if row.get("builtin").and_then(Value::as_bool) == Some(true) {
             "built-in"
         } else {
@@ -147,7 +153,13 @@ fn list(settings: &Config, json: bool) -> Result<(), String> {
         };
         println!(
             "{} {:<12} {:<8} {:<7} {}",
-            if selected { "*" } else { " " },
+            if flag("selected") {
+                "*"
+            } else if flag("fallback") {
+                "+"
+            } else {
+                " "
+            },
             text("id"),
             origin,
             text("type"),
@@ -157,7 +169,9 @@ fn list(settings: &Config, json: bool) -> Result<(), String> {
     if !engines.enabled {
         println!("engines.enabled is false: no engine runs");
     }
-    println!("* selected. Edit with search enable|disable|configure ID.");
+    println!(
+        "* selected, + fallback (engines.fallback). Edit with search enable|disable|configure ID."
+    );
     Ok(())
 }
 
@@ -211,7 +225,7 @@ fn select(path: &Path, resolve: bool, edit: impl FnOnce(&mut Vec<String>)) -> Re
 }
 
 /// Parse and validate raw settings with the running Search home. With
-/// `resolve`, every selected engine must also resolve (when engines are
+/// `resolve`, every selected and fallback engine must also resolve (when engines are
 /// enabled); unselected engines may stay incomplete while being configured.
 fn checked(raw: &Value, resolve: bool) -> Result<Config, String> {
     let mut settings: Config = serde_path_to_error::deserialize(raw.clone()).map_err(|error| {
@@ -223,7 +237,12 @@ fn checked(raw: &Value, resolve: bool) -> Result<Config, String> {
     settings.home = config::home().map_err(|e| e.message().to_owned())?;
     settings.validate().map_err(|e| e.message().to_owned())?;
     if resolve && settings.engines.enabled {
-        for id in &settings.engines.use_engines {
+        for id in settings
+            .engines
+            .use_engines
+            .iter()
+            .chain(&settings.engines.fallback)
+        {
             settings
                 .engines
                 .adapter(id)

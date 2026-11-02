@@ -1,5 +1,6 @@
 //! The fan-out: run every selected engine concurrently under its own
-//! deadline, then merge the answers into one ranking.
+//! deadline, then merge the answers into one ranking. Fallback engines run
+//! only when the selected engines found nothing, within the same deadline.
 //!
 //! Failure is interpretive, not fatal: an engine that errors is reported in its
 //! `EngineState` beside the results, so an empty result set is never mistaken
@@ -18,6 +19,7 @@ use crate::core::{Answer, Link, Query};
 /// Owns enabled engine transports and query bounds.
 pub struct Pool {
     engines: Vec<Arc<dyn Engine>>,
+    fallback: Vec<Arc<dyn Engine>>,
     settings: SearchSettings,
     cache: std::sync::Mutex<super::cache::Cache>,
 }
@@ -27,28 +29,37 @@ impl Pool {
     /// without reading credentials or running engine code.
     pub fn new(config: &Config) -> Result<Self, ConfigError> {
         config.validate()?;
-        let mut engines: Vec<Arc<dyn Engine>> = Vec::new();
-        if config.engines.enabled {
-            for id in &config.engines.use_engines {
-                let settings = config.engines.adapter(id)?;
-                let adapter =
-                    super::adapter::Adapter::new(id.clone(), settings, &config.user_agent)
-                        .map_err(|_| {
-                            ConfigError::new(format!("engine {id}: HTTP client failed"))
-                        })?;
-                engines.push(Arc::new(adapter));
+        let open = |ids: &[String]| -> Result<Vec<Arc<dyn Engine>>, ConfigError> {
+            let mut engines: Vec<Arc<dyn Engine>> = Vec::new();
+            if config.engines.enabled {
+                for id in ids {
+                    let settings = config.engines.adapter(id)?;
+                    let adapter =
+                        super::adapter::Adapter::new(id.clone(), settings, &config.user_agent)
+                            .map_err(|_| {
+                                ConfigError::new(format!("engine {id}: HTTP client failed"))
+                            })?;
+                    engines.push(Arc::new(adapter));
+                }
             }
-        }
+            Ok(engines)
+        };
         Ok(Self {
-            engines,
+            engines: open(&config.engines.use_engines)?,
+            fallback: open(&config.engines.fallback)?,
             settings: config.search.clone(),
             cache: Default::default(),
         })
     }
 
-    /// The enabled engine names, for status output.
+    /// The enabled engine names, selected then fallback, for status output.
     pub fn names(&self) -> Vec<String> {
-        self.engines.iter().map(|p| p.name().to_owned()).collect()
+        self.all().map(|p| p.name().to_owned()).collect()
+    }
+
+    /// Selected engines, then fallback engines.
+    fn all(&self) -> impl Iterator<Item = &Arc<dyn Engine>> {
+        self.engines.iter().chain(&self.fallback)
     }
 
     /// The server-side ceiling for one query.
@@ -79,6 +90,56 @@ impl Pool {
         }
         let limit = self.settings.result_limit(query.limit);
         let selected: Vec<Arc<dyn Engine>> = self.select(&query.engines);
+        let mut collected = self.run(&selected, &query, limit, started).await;
+        // Fallbacks stand in only for the configured selection, not an explicit one.
+        if query.engines.is_empty()
+            && !self.fallback.is_empty()
+            && collected.iter().all(|(_, results)| results.is_empty())
+        {
+            collected.extend(self.run(&self.fallback, &query, limit, started).await);
+        }
+
+        let mut states: Vec<EngineState> = query
+            .engines
+            .iter()
+            .filter(|name| !self.all().any(|engine| engine.name() == name.as_str()))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(|name| {
+                let mut state = failed(name, EngineStatus::Error, "engine is not enabled", 0);
+                state.unsupported_filters = query.filters.values().into_keys().collect();
+                state
+            })
+            .collect();
+        let mut merged = Vec::new();
+        for (state, results) in collected {
+            states.push(state);
+            merged.extend(results);
+        }
+        states.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let results = fuse(&merged, limit);
+        let answer = Answer {
+            query: query.text,
+            results,
+            engines: states,
+            duration_ms: started.elapsed().as_millis() as u64,
+        };
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.insert(key, &answer, ttl, self.settings.cache_bytes);
+        }
+        answer
+    }
+
+    /// Run `selected` concurrently within what is left of the overall deadline, returning
+    /// one state and result list per engine, in `selected` order.
+    async fn run(
+        &self,
+        selected: &[Arc<dyn Engine>],
+        query: &Query,
+        limit: usize,
+        started: Instant,
+    ) -> Vec<(EngineState, Vec<Ranked>)> {
         let per_engine_time = self.settings.engine_timeout();
 
         let mut set: JoinSet<(EngineState, Vec<Ranked>)> = JoinSet::new();
@@ -94,31 +155,35 @@ impl Pool {
         // Ordered by engine index so output is stable regardless of finish order.
         let mut collected: Vec<Option<(EngineState, Vec<Ranked>)>> =
             (0..selected.len()).map(|_| None).collect();
-        let completed = tokio::time::timeout(self.settings.timeout(), async {
-            while let Some(joined) = set.join_next_with_id().await {
-                let (id, outcome) = match joined {
-                    Ok((id, outcome)) => (id, Some(outcome)),
-                    // A panicking engine must not take the query down; it is
-                    // reported under its own name as a failed engine.
-                    Err(error) => (error.id(), None),
-                };
-                // Task IDs map to indexes produced by `enumerate` over
-                // `selected`, so lookups succeed; `get` keeps that provable.
-                let Some(&index) = tasks.get(&id) else {
-                    continue;
-                };
-                let (Some(slot), Some(engine)) = (collected.get_mut(index), selected.get(index))
-                else {
-                    continue;
-                };
-                *slot = Some(outcome.unwrap_or_else(|| {
-                    let mut state =
-                        failed(engine.name(), EngineStatus::Error, "engine task failed", 0);
-                    state.unsupported_filters = engine.unsupported_filters(&query.filters);
-                    (state, Vec::new())
-                }));
-            }
-        })
+        let completed = tokio::time::timeout(
+            self.settings.timeout().saturating_sub(started.elapsed()),
+            async {
+                while let Some(joined) = set.join_next_with_id().await {
+                    let (id, outcome) = match joined {
+                        Ok((id, outcome)) => (id, Some(outcome)),
+                        // A panicking engine must not take the query down; it is
+                        // reported under its own name as a failed engine.
+                        Err(error) => (error.id(), None),
+                    };
+                    // Task IDs map to indexes produced by `enumerate` over
+                    // `selected`, so lookups succeed; `get` keeps that provable.
+                    let Some(&index) = tasks.get(&id) else {
+                        continue;
+                    };
+                    let (Some(slot), Some(engine)) =
+                        (collected.get_mut(index), selected.get(index))
+                    else {
+                        continue;
+                    };
+                    *slot = Some(outcome.unwrap_or_else(|| {
+                        let mut state =
+                            failed(engine.name(), EngineStatus::Error, "engine task failed", 0);
+                        state.unsupported_filters = engine.unsupported_filters(&query.filters);
+                        (state, Vec::new())
+                    }));
+                }
+            },
+        )
         .await
         .is_ok();
 
@@ -141,42 +206,7 @@ impl Pool {
             }
         }
 
-        let mut states: Vec<EngineState> = query
-            .engines
-            .iter()
-            .filter(|name| {
-                !self
-                    .engines
-                    .iter()
-                    .any(|engine| engine.name() == name.as_str())
-            })
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .map(|name| {
-                let mut state = failed(name, EngineStatus::Error, "engine is not enabled", 0);
-                state.unsupported_filters = query.filters.values().into_keys().collect();
-                state
-            })
-            .collect();
-        let mut merged = Vec::new();
-        for slot in collected.into_iter().flatten() {
-            let (state, results) = slot;
-            states.push(state);
-            merged.extend(results);
-        }
-        states.sort_by(|a, b| a.name.cmp(&b.name));
-
-        let results = fuse(&merged, limit);
-        let answer = Answer {
-            query: query.text,
-            results,
-            engines: states,
-            duration_ms: started.elapsed().as_millis() as u64,
-        };
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.insert(key, &answer, ttl, self.settings.cache_bytes);
-        }
-        answer
+        collected.into_iter().flatten().collect()
     }
 
     /// Restrict to the requested names, preserving pool order. A request for
@@ -186,8 +216,7 @@ impl Pool {
         if names.is_empty() {
             return self.engines.clone();
         }
-        self.engines
-            .iter()
+        self.all()
             .filter(|p| names.iter().any(|n| n == p.name()))
             .cloned()
             .collect()
@@ -502,6 +531,7 @@ mod tests {
                         ) as Arc<dyn Engine>
                     })
                     .collect(),
+                fallback: Vec::new(),
                 settings,
                 cache: Default::default(),
             }
@@ -551,8 +581,80 @@ mod tests {
     fn pool(engine: TestEngine, settings: SearchSettings) -> Pool {
         Pool {
             engines: vec![Arc::new(engine)],
+            fallback: Vec::new(),
             settings,
             cache: Default::default(),
+        }
+    }
+
+    /// An engine with a name that returns `count` results and counts its calls.
+    struct Counted {
+        name: &'static str,
+        count: usize,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Engine for Counted {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn search(&self, _query: String, _limit: usize) -> super::super::EngineFuture {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let (name, count) = (self.name, self.count);
+            Box::pin(async move {
+                Ok(Found {
+                    links: (0..count)
+                        .map(|i| Link {
+                            title: format!("{name} {i}"),
+                            url: format!("https://example.com/{name}/{i}"),
+                            snippet: None,
+                            snippets: Vec::new(),
+                            updated: None,
+                            published: None,
+                            engines: vec![name.into()],
+                            score: 0.0,
+                        })
+                        .collect(),
+                    skipped: 0,
+                    unsupported_filters: Vec::new(),
+                })
+            })
+        }
+    }
+
+    /// A fallback engine runs only when every selected engine found nothing.
+    #[tokio::test]
+    async fn fallback_runs_only_when_selected_engines_find_nothing() {
+        for (primary_results, fallback_calls) in [(0, 1), (2, 0)] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let pool = Pool {
+                engines: vec![Arc::new(Counted {
+                    name: "primary",
+                    count: primary_results,
+                    calls: Arc::new(AtomicUsize::new(0)),
+                })],
+                fallback: vec![Arc::new(Counted {
+                    name: "backup",
+                    count: 1,
+                    calls: Arc::clone(&calls),
+                })],
+                settings: SearchSettings {
+                    cache_ttl: 0,
+                    ..SearchSettings::default()
+                },
+                cache: Default::default(),
+            };
+            let answer = pool
+                .search(Query {
+                    text: "q".into(),
+                    ..Default::default()
+                })
+                .await;
+            assert_eq!(calls.load(Ordering::SeqCst), fallback_calls);
+            let backup_ran = answer.engines.iter().any(|state| state.name == "backup");
+            assert_eq!(backup_ran, fallback_calls == 1);
+            assert_eq!(answer.results.len(), primary_results.max(fallback_calls));
         }
     }
 
@@ -920,6 +1022,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let pool = Pool {
             engines: vec![Arc::new(Counting(calls.clone()))],
+            fallback: Vec::new(),
             settings: SearchSettings {
                 cache_ttl: 200,
                 ..Default::default()
@@ -1017,6 +1120,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let pool = Pool {
             engines: vec![Arc::new(Failing(calls.clone()))],
+            fallback: Vec::new(),
             settings: SearchSettings {
                 engine_timeout: 20,
                 ..Default::default()

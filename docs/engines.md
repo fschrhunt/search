@@ -19,7 +19,12 @@ and no Rust rebuild or Search SDK.
 ```
 
 `engines.use` selects engine IDs; it defaults to `["mwmbl"]`, and an empty array
-selects none. `engines.config.ID` defines each engine:
+selects none. `engines.fallback` lists engines that run only when every selected
+engine returns no results, for example when a paid engine's monthly quota runs
+out: `"use": ["exa"], "fallback": ["searxng"]`. Fallbacks share the query's
+overall deadline, never also appear in `use`, and are skipped when a query names
+its engines with `-engines`. `search engines` marks them `+`.
+`engines.config.ID` defines each engine:
 
 - **Preset IDs** (`mwmbl`, `searxng`): the entry is optional and merges
   **shallowly** over the built-in adapter (setting an object replaces that whole

@@ -98,6 +98,16 @@ impl EngineSettings {
                 return Err(format!("engines.use repeats engine {name}"));
             }
         }
+        for name in &self.fallback {
+            if !valid_engine_id(name) {
+                return Err("engines.fallback contains an invalid ID; use lowercase letters, digits, - or _ (max 64)".into());
+            }
+            if !seen.insert(name) {
+                return Err(format!(
+                    "engines.fallback repeats engine {name}, or it is also in engines.use"
+                ));
+            }
+        }
         for (name, value) in &self.config {
             if !valid_engine_id(name) {
                 return Err("engines.config contains an invalid engine ID".into());
@@ -446,6 +456,22 @@ pub(crate) fn safe_field_path(path: &serde_path_to_error::Path) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A fallback engine may not repeat, or also be selected: it would run twice.
+    #[test]
+    fn fallback_must_not_overlap_selection() {
+        let mut settings = EngineSettings {
+            use_engines: vec!["exa".into()],
+            fallback: vec!["searxng".into()],
+            ..EngineSettings::default()
+        };
+        assert!(settings.validate().is_ok());
+        settings.fallback.push("exa".into());
+        assert!(settings
+            .validate()
+            .unwrap_err()
+            .contains("engines.fallback repeats engine exa"));
+    }
     use super::*;
     use crate::core::config::Config;
     use serde_json::json;

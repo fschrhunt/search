@@ -108,6 +108,9 @@ pub struct EngineSettings {
     /// Selected engine IDs; an empty list disables all live engines.
     #[serde(rename = "use")]
     pub use_engines: Vec<String>,
+    /// Engine IDs run only when every `use` engine returns no results, such as
+    /// after a paid engine's quota runs out. Never also in `use`.
+    pub fallback: Vec<String>,
     /// Per-engine adapter objects: shallow overrides of a built-in preset, or a
     /// complete `http`/`command` adapter for any other ID.
     pub config: BTreeMap<String, serde_json::Value>,

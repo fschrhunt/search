@@ -46,6 +46,7 @@ Local CLI and stdio MCP need no pairing; hosting uses [paired HTTPS](remote.md).
   "engines": {
     "enabled": true,
     "use": ["mwmbl"],
+    "fallback": [],
     "config": {}
   },
   "remote": { "timeout": 120000, "max_response_bytes": 67108864 },
@@ -110,6 +111,7 @@ fetch cache; `max_redirects: 0` follows no redirects.
   budget are returned without being cached; cached pages expire after `cache_ttl`.
 - `engines.use` selects engine IDs; the default is just `mwmbl`.
   An empty list or `engines.enabled: false` returns no discovery results.
+  `engines.fallback` engines run only when every selected engine finds nothing.
   `engines.config.ID` defines each engine: shallow overrides for the `mwmbl` and
   `searxng` presets (SearXNG needs `url`), or a complete `http`/`command` adapter
   for any other ID. See [engines](engines.md) for fields, setup and trust.
