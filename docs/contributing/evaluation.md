@@ -47,6 +47,24 @@ settings, collection dates, and costs. Live pages and indexes change; only
 packet replay is reproducible. Never publish captured private content, queries,
 credentials, or settings without reviewing them.
 
+`tests/fixtures/evaluation/agent-tasks.json` holds 22 questions coding agents
+actually ask — library and tool docs, config keys, error messages, standards —
+each labeled with the authoritative page that answers it and a verbatim span
+from that page. Labels name the page that should answer, not what an engine
+returned, and every span was checked against the live page; one author labeled
+them, so review them before relying on the set.
+Score a configuration against it the same way:
+
+```sh
+./x eval tests/fixtures/evaluation/agent-tasks.json \
+  --binary ./target/debug/search --config /absolute/path/settings.json \
+  --save-packets /absolute/path/agent-packets.json -k 5
+```
+
+On 2026-11-02, the keyless Mwmbl default found 2 of 22 (recall@5 0.09); a
+self-hosted SearXNG with its general engines found 15 of 22 (0.68). Pages move:
+re-check a label's URL and span before treating a miss as a retrieval failure.
+
 The included two-case dataset is a harness starter, not a representative
 benchmark. No claim of superiority or parity with Exa, Parallel, or another
 managed engine follows from it. Such a claim needs a larger independently

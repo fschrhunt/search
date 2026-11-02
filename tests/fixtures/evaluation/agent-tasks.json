@@ -1,0 +1,310 @@
+[
+ {
+  "id": "chezmoi-remove",
+  "queries": [
+   "chezmoi .chezmoiremove file"
+  ],
+  "relevant": [
+   {
+    "url": "https://www.chezmoi.io/reference/special-files/chezmoiremove/",
+    "spans": [
+     "then it is interpreted as a list of targets to remove."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "tokio-select-cancel",
+  "queries": [
+   "tokio select cancellation safety"
+  ],
+  "relevant": [
+   {
+    "url": "https://docs.rs/tokio/latest/tokio/macro.select.html",
+    "spans": [
+     "Cancellation safety describes what happens when a future is dropped before it completes."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "claude-pretooluse",
+  "queries": [
+   "Claude Code PreToolUse hook permissionDecision deny"
+  ],
+  "relevant": [
+   {
+    "url": "https://code.claude.com/docs/en/hooks",
+    "spans": [
+     "returns a `permissionDecision` of `\"deny\"` if it contains `rm -rf`."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "python-free-threading",
+  "queries": [
+   "python free-threaded build without GIL howto"
+  ],
+  "relevant": [
+   {
+    "url": "https://docs.python.org/3/howto/free-threading-python.html",
+    "spans": [
+     "CPython has support for a build of Python called free threading where the global interpreter lock (GIL) is disabled."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "git-worktree",
+  "queries": [
+   "git worktree add new branch"
+  ],
+  "relevant": [
+   {
+    "url": "https://git-scm.com/docs/git-worktree",
+    "spans": [
+     "A git repository can support multiple working trees, allowing you to check out more than one branch at a time."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "playwright-cli",
+  "queries": [
+   "playwright-cli coding agents headless"
+  ],
+  "relevant": [
+   {
+    "url": "https://github.com/microsoft/playwright-cli",
+    "spans": [
+     "Playwright CLI is headless by default."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "systemd-protectsystem",
+  "queries": [
+   "systemd ProtectSystem strict service sandboxing"
+  ],
+  "relevant": [
+   {
+    "url": "https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html",
+    "spans": [
+     "Takes a boolean argument or the special values \"`full`\" or \"`strict`\"."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "mdn-abortcontroller",
+  "queries": [
+   "javascript fetch abort request AbortController"
+  ],
+  "relevant": [
+   {
+    "url": "https://developer.mozilla.org/en-US/docs/Web/API/AbortController",
+    "spans": [
+     "allows you to abort one or more Web requests as and when desired."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "go-errors-is",
+  "queries": [
+   "go errors.Is wrapped error"
+  ],
+  "relevant": [
+   {
+    "url": "https://pkg.go.dev/errors",
+    "spans": [
+     "Is reports whether any error in err's tree matches target."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "postgres-upsert",
+  "queries": [
+   "postgresql insert on conflict do update upsert"
+  ],
+  "relevant": [
+   {
+    "url": "https://www.postgresql.org/docs/current/sql-insert.html",
+    "spans": [
+     "If `ON CONFLICT DO UPDATE` is present, `UPDATE` privilege on the table is also required."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "sqlite-wal",
+  "queries": [
+   "sqlite write-ahead logging WAL mode"
+  ],
+  "relevant": [
+   {
+    "url": "https://www.sqlite.org/wal.html",
+    "spans": [
+     "WAL is significantly faster in most scenarios."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "node-exports",
+  "queries": [
+   "node package.json exports field subpath"
+  ],
+  "relevant": [
+   {
+    "url": "https://nodejs.org/api/packages.html",
+    "spans": [
+     "two fields can define entry points for a package: \"main\" and \"exports\"."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "json-pointer",
+  "queries": [
+   "JSON Pointer RFC 6901 escaping tilde"
+  ],
+  "relevant": [
+   {
+    "url": "https://www.rfc-editor.org/rfc/rfc6901",
+    "spans": [
+     "JSON Pointer defines a string syntax for identifying a specific value"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "retry-after",
+  "queries": [
+   "HTTP Retry-After header 429"
+  ],
+  "relevant": [
+   {
+    "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Retry-After",
+    "spans": [
+     "response header indicates how long the user agent should wait before making a follow-up request."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "gha-concurrency",
+  "queries": [
+   "github actions concurrency cancel-in-progress"
+  ],
+  "relevant": [
+   {
+    "url": "https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency",
+    "spans": [
+     "To also cancel any currently running job or workflow in the same concurrency group, specify `cancel-in-progress: true`."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "searxng-limiter",
+  "queries": [
+   "searxng limiter bot protection settings"
+  ],
+  "relevant": [
+   {
+    "url": "https://docs.searxng.org/admin/searx.limiter.html",
+    "spans": [
+     "To avoid blocking, the requests from bots to SearXNG must also be blocked, this is the task of the limiter."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "pep668",
+  "queries": [
+   "pip error externally-managed-environment"
+  ],
+  "relevant": [
+   {
+    "url": "https://peps.python.org/pep-0668/",
+    "spans": [
+     "Mark the installation as externally managed"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "ts-satisfies",
+  "queries": [
+   "typescript satisfies operator"
+  ],
+  "relevant": [
+   {
+    "url": "https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html",
+    "spans": [
+     "operator lets us validate that the type of an expression matches some type, without changing the resulting type of that expression."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "zsh-expansion",
+  "queries": [
+   "zsh parameter expansion flags"
+  ],
+  "relevant": [
+   {
+    "url": "https://zsh.sourceforge.io/Doc/Release/Expansion.html",
+    "spans": [
+     "Parameter expansions can involve *flags*"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "tailscale-serve",
+  "queries": [
+   "tailscale serve share local service tailnet"
+  ],
+  "relevant": [
+   {
+    "url": "https://tailscale.com/docs/features/tailscale-serve",
+    "spans": [
+     "Tailscale Serve lets you route traffic from other devices on your Tailscale network (known as a tailnet) to a local service running on your device."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "rust-ownership",
+  "queries": [
+   "Rust ownership move semantics"
+  ],
+  "relevant": [
+   {
+    "url": "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
+    "spans": [
+     "Memory is managed through a system of ownership with a set of rules that the compiler checks."
+    ]
+   }
+  ]
+ },
+ {
+  "id": "bash-set-e",
+  "queries": [
+   "bash set -e errexit pipefail behavior"
+  ],
+  "relevant": [
+   {
+    "url": "https://www.gnu.org/software/bash/manual/html_node/The-Set-Builtin.html",
+    "spans": [
+     "If set, the return value of a pipeline is the value of the last (rightmost) command to exit with a non-zero status"
+    ]
+   }
+  ]
+ }
+]
