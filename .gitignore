@@ -14,3 +14,6 @@ Cargo.lock.orig
 /.opencode/worktrees/
 /.pi/worktrees/
 /.ask/worktrees/
+
+# Python bytecode from the script tests
+__pycache__/
