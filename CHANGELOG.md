@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 · 2026-11-02
 
 - **Fallback engines.** `engines.fallback` lists engines that run only when every
   engine in `engines.use` finds nothing, such as after a paid engine's quota runs
