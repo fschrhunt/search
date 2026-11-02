@@ -12,13 +12,15 @@ in `core::config::engines`, resolved exactly like custom engines.
 | `cache.rs` | Bounded TTL cache of fully successful answers keyed by complete queries |
 | `scratch.rs` | Private command scratch directories |
 
-`Pool::new` resolves each ID in `engines.use` through
+`Pool::new` resolves each ID in `engines.use` and `engines.fallback` through
 `EngineSettings::adapter`, which merges a preset with its `engines.config` entry
 (or takes a custom entry as is), validates it, and gives command engines an
 absolute `cwd`. Construction reads no credentials and runs no engine code; HTTP
 engines build one guarded client each and reuse it. Reciprocal-rank fusion
 counts each normalized URL once per engine, using its best rank; duplicate rows
-cannot substitute for agreement between engines. URL identities remove fragments
+cannot substitute for agreement between engines. Fallback engines run only after every selected engine
+returned no results, within the remaining overall deadline, and never for a query
+that names its engines. URL identities remove fragments
 and tracking parameters while preserving significant path slashes and the raw
 encoding of other query parameters.
 

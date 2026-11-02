@@ -57,6 +57,7 @@ impl Default for EngineSettings {
         Self {
             enabled: true,
             use_engines: vec![super::DEFAULT_ENGINE.into()],
+            fallback: Vec::new(),
             config: Default::default(),
         }
     }

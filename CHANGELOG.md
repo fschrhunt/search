@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Fallback engines.** `engines.fallback` lists engines that run only when every
+  engine in `engines.use` finds nothing, such as after a paid engine's quota runs
+  out. `search engines` marks them `+`.
 - **HTTP engines can POST JSON.** An `http` adapter with a `body` object sends it as a
   JSON POST, adding the query, limit and filters as fields. AI search APIs such as Exa
   need only settings now, not a command program.
