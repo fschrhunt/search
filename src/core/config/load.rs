@@ -185,6 +185,14 @@ impl Config {
                 "fetch.max_concurrency exceeds runtime capacity",
             ));
         }
+        if !self.fetch.stack_exchange.is_empty()
+            && !url::Url::parse(&self.fetch.stack_exchange)
+                .is_ok_and(|api| matches!(api.scheme(), "http" | "https"))
+        {
+            return Err(ConfigError::new(
+                "fetch.stack_exchange must be an http(s) URL or empty",
+            ));
+        }
         for (name, value) in [
             ("search.max_results", self.search.max_results as u64),
             ("search.engine_timeout", self.search.engine_timeout),
@@ -253,6 +261,20 @@ mod tests {
         assert_eq!(
             config.validate().unwrap_err().message(),
             "fetch.max_concurrency exceeds runtime capacity"
+        );
+    }
+
+    /// A Stack Exchange API root that is not an http(s) URL fails at load, not per fetch.
+    #[test]
+    fn malformed_stack_exchange_root_is_rejected() {
+        let mut config = Config {
+            home: std::env::temp_dir().canonicalize().unwrap(),
+            ..Config::default()
+        };
+        config.fetch.stack_exchange = "file:///etc".into();
+        assert_eq!(
+            config.validate().unwrap_err().message(),
+            "fetch.stack_exchange must be an http(s) URL or empty"
         );
     }
 

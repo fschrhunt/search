@@ -19,12 +19,13 @@ prod_sources() {
 }
 
 # 1. Network surface. Search talks to the engines defined in settings and the
-#    pages a caller asks it to fetch. Built-in preset hosts live in Rust source
+#    pages a caller asks it to fetch (Stack Exchange questions through their
+#    public API). Built-in preset hosts live in Rust source
 #    and are audited with every other call site. Operator-configured HTTP
 #    adapters use the SSRF guard; command engines are deliberately trusted host
 #    programs, not sandboxed. Hosts named only in a comment (a doc example, an
 #    injection illustration) are not call sites and are skipped.
-allowed_hosts="index.crates.io crates.io static.crates.io api.mwmbl.org example.com example.invalid localhost 127.0.0.1 0.0.0.0 github.com"
+allowed_hosts="index.crates.io crates.io static.crates.io api.mwmbl.org api.stackexchange.com example.com example.invalid localhost 127.0.0.1 0.0.0.0 github.com"
 found_hosts=$(
     for f in $(prod_sources); do
         awk '/^#\[cfg\(test\)\]/ { exit } /^[[:space:]]*(\/\/|\*)/ { next } { print }' "$f"

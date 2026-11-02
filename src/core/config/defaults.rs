@@ -81,6 +81,7 @@ impl Default for FetchSettings {
             cache_bytes: 32 << 20,
             allow_private_networks: false,
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
+            stack_exchange: "https://api.stackexchange.com/2.3".into(),
         }
     }
 }

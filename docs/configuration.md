@@ -40,7 +40,8 @@ Local CLI and stdio MCP need no pairing; hosting uses [paired HTTPS](remote.md).
     "cache_ttl": 600000,
     "cache_bytes": 33554432,
     "allow_private_networks": false,
-    "max_concurrency": 8
+    "max_concurrency": 8,
+    "stack_exchange": "https://api.stackexchange.com/2.3"
   },
   "engines": {
     "enabled": true,
@@ -96,6 +97,12 @@ fetch cache; `max_redirects: 0` follows no redirects.
   reports `truncated`. Only tests and
   air-gapped mirrors should set `allow_private_networks: true`, which disables
   the page-fetch SSRF guard.
+- `fetch.stack_exchange` is the Stack Exchange API root. Stack Overflow and its
+  sibling sites refuse scripted reads, so a question URL (`/questions/ID` or
+  `/q/ID`) is read through this API, in one call that returns the question and
+  every answer by score. The API is keyless, at about 300 reads a day per IP; when
+  that runs out, fetch reports the API's reason. Set it to `""` to read those URLs
+  like any other page.
 - `fetch.cache_bytes` bounds approximate cached string payloads (text, URLs,
   metadata, and keys) plus entry structs, defaulting to 32 MiB. Hash-table slack
   and allocator overhead are excluded. The cache clears all entries when an

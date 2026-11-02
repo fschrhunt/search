@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Stack Exchange questions are readable.** Stack Overflow and its sibling sites
+  refuse scripted page reads, so `fetch` reads a question URL through the public
+  Stack Exchange API instead (keyless, about 300 reads a day per IP): the question,
+  then every answer by score, the accepted one marked. `fetch.stack_exchange` sets
+  the API root; an empty value reads those URLs like any other page.
 - **MCP tools take the CLI's names:** `find`, `fetch`, `research`, `crawl` and `map`
   (were `web_search`, `web_fetch`, `web_research`, `web_crawl`, `web_map`). Clients and
   routers already prefix the server name, so they read `search.fetch` rather than

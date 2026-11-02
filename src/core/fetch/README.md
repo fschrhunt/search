@@ -7,6 +7,7 @@ reporting failures without panicking. It does not store a persistent corpus.
 | --- | --- |
 | `mod.rs` | HTTP client, byte/concurrency limits, content-type policy, charset decoding, redirects, and ordered batches |
 | `guard.rs` | SSRF address classification, hostname checks, and connect-time DNS validation |
+| `stack_exchange.rs` | Stack Exchange question URLs to API requests, and API answers to one HTML document |
 | `cache.rs` | Byte- and count-bounded, in-memory TTL cache |
 | `extract/mod.rs` | Main-content extraction, cleaned fallback, metadata, meta-refresh detection, and PDF text |
 | `extract/visibility.rs` | Hidden-content and boilerplate filtering |
@@ -23,6 +24,11 @@ Only prompt `<meta http-equiv="refresh">` targets are followed; scripts are neve
 executed or mined for URLs. Every followed target returns through the guard, with
 bounded hops, while `Page.url` remains the requested URL. Explicit
 `allow_private_networks` is an operator override, not a property of page content.
+
+A Stack Exchange question URL is never dialed: it is read from `fetch.stack_exchange`
+through the same guarded request path and byte bound, and the API's sanitized
+HTML goes through the normal extractor. Match only question paths on Stack
+Exchange hosts; anything else is an ordinary page.
 
 Only successful pages enter the transient cache. Zero TTL or byte budget disables
 storage; oversized pages bypass it. Full caches clear rather than growing without
