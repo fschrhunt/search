@@ -8,6 +8,7 @@
 mod cache;
 mod extract;
 pub(crate) mod guard;
+mod stack_exchange;
 
 /// Apply the reader's image/reference neutralization to optional generated prose.
 /// Edge processors are trusted programs, but their returned text is still data.
@@ -215,9 +216,92 @@ impl Fetcher {
     /// One deadline includes admission, every redirect, and extraction. Cancelled
     /// queued workers are aborted; running workers retain their concurrency slot.
     async fn fetch_mode(&self, raw: &str, links: bool) -> Result<Page, FetchError> {
-        tokio::time::timeout(self.settings.timeout(), self.fetch_chain(raw, links))
+        let read = async {
+            match stack_exchange::api_url(&self.settings.stack_exchange, raw) {
+                Some(api) => self.fetch_stack_exchange(raw, &api, links).await,
+                None => self.fetch_chain(raw, links).await,
+            }
+        };
+        tokio::time::timeout(self.settings.timeout(), read)
             .await
             .map_err(|_| FetchError::Network("request timed out".into()))?
+    }
+
+    /// Read a Stack Exchange question through its API: the site itself refuses
+    /// scripted reads. The API call takes the same guarded path, byte bound and
+    /// cache as a page; `final_url` is the question's canonical link.
+    async fn fetch_stack_exchange(
+        &self,
+        raw: &str,
+        api: &url::Url,
+        links: bool,
+    ) -> Result<Page, FetchError> {
+        if !links {
+            if let Some(cached) = self.cache.get(raw) {
+                return Ok(cached);
+            }
+        }
+        let permit = self
+            .permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| FetchError::Network("fetcher is shutting down".into()))?;
+        let response = self.request(api, &mut 0).await?;
+        let status = response.status().as_u16();
+        let (body, truncated) = read_capped(response, self.settings.max_response_bytes)
+            .await
+            .map_err(FetchError::Network)?;
+        if truncated {
+            return Err(FetchError::Unsupported(
+                "Stack Exchange answer larger than fetch.max_response_bytes".into(),
+            ));
+        }
+        // An API error carries its reason in a JSON body, whatever the status.
+        let rendered = match stack_exchange::render(&body) {
+            Ok(rendered) => rendered,
+            Err(_) if status >= 400 && !body.starts_with(b"{") => {
+                return Err(FetchError::Status(status))
+            }
+            Err(reason) => return Err(FetchError::Network(reason)),
+        };
+        let link = rendered.link.clone();
+        let mut work = BlockingWork(tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let graph = if links {
+                extract::links(&rendered.html, &rendered.link)
+            } else {
+                Vec::new()
+            };
+            (extract::read(&rendered.html, &rendered.link), graph)
+        }));
+        let (page, graph) = tokio::time::timeout(self.settings.timeout(), &mut work.0)
+            .await
+            .map_err(|_| FetchError::Network("extraction timed out".into()))?
+            .map_err(|_| FetchError::Network("extraction failed".into()))?;
+        if page.text.trim().is_empty() {
+            return Err(FetchError::Empty);
+        }
+        let fetched = Page {
+            url: raw.to_string(),
+            fetched_at: Some(now_unix()),
+            final_url: Some(link),
+            status: 200,
+            content_type: "text/html".into(),
+            title: Some(page.title).filter(|t| !t.is_empty()),
+            byline: None,
+            published: None,
+            site: None,
+            text: page.text,
+            links: graph,
+            truncated: None,
+            redirect: None,
+            error: None,
+        };
+        if !links {
+            self.cache.put(raw, &fetched);
+        }
+        Ok(fetched)
     }
 
     /// Follow HTTP and refresh hops with one guarded allowance and extraction mode.
@@ -1372,6 +1456,38 @@ mod tests {
             .await;
         assert_eq!(pages[0].status, 404);
         assert_eq!(pages[0].error.as_deref(), Some("HTTP 404"));
+    }
+
+    /// A Stack Overflow question is read from the configured API, never the site,
+    /// and comes back as the question's text with its canonical link.
+    #[tokio::test]
+    async fn stack_exchange_questions_are_read_through_the_api() {
+        let page = "https://stackoverflow.com/questions/1/q";
+        let api = stack_exchange::api_url("http://127.0.0.1/2.3", page).unwrap();
+        let route: &'static str =
+            Box::leak(format!("{}?{}", api.path(), api.query().unwrap()).into_boxed_str());
+        let body = br#"{"items":[{"title":"How do I exit?","link":"https://stackoverflow.com/questions/1/how","score":2,
+            "body":"<p>The editor will not let me leave and I have tried every key on the keyboard so far.</p>",
+            "answers":[{"body":"<p>Press escape, then type the colon command and quit, which leaves without saving anything.</p>","score":9,"is_accepted":true}]}]}"#;
+        let port = serve(vec![(route, "application/json", body.to_vec())]).await;
+        let fetcher = Fetcher::new(
+            FetchSettings {
+                allow_private_networks: true,
+                stack_exchange: format!("http://127.0.0.1:{port}/2.3"),
+                ..FetchSettings::default()
+            },
+            "search-test",
+        )
+        .unwrap();
+        let fetched = fetcher.fetch(page).await.unwrap();
+        assert_eq!(fetched.url, page);
+        assert_eq!(
+            fetched.final_url.as_deref(),
+            Some("https://stackoverflow.com/questions/1/how")
+        );
+        assert_eq!(fetched.title.as_deref(), Some("How do I exit?"));
+        assert!(fetched.text.contains("Answer (score 9, accepted)"));
+        assert!(fetched.text.contains("type the colon command"));
     }
 
     /// Serve fixed `(path, content type, body)` responses on a loopback port.

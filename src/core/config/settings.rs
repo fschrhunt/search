@@ -67,6 +67,9 @@ pub struct FetchSettings {
     pub allow_private_networks: bool,
     /// How many fetches run at once.
     pub max_concurrency: usize,
+    /// Stack Exchange API root used to read question pages, which refuse
+    /// scripted reads; empty reads those URLs like any other page.
+    pub stack_exchange: String,
 }
 
 impl SearchSettings {

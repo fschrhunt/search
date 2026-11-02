@@ -43,6 +43,7 @@ src/core/      protocol-free engine (`search::core::Search`)
     guard.rs   the SSRF guard and resolver — the security-critical file
     extract/   main content (Markdown), visibility filtering, PDF text, image guard
     cache.rs   transient in-memory pages
+    stack_exchange.rs  Stack Exchange questions read through the public API
   text.rs      focus: query passages and continuable character windows
   crawl.rs     bounded robots-aware collection traversal and mapping
   research.rs  deterministic evidence packets: Packet, Evidence, Coverage
