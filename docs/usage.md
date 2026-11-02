@@ -60,12 +60,12 @@ for the configuration file location and schema. Ensure its process can find
 { "mcpServers": { "search": { "command": "search", "args": [] } } }
 ```
 
-- **`web_search`** takes one to five queries, an optional result limit, and an
+- **`find`** takes one to five queries, an optional result limit, and an
   optional `engines` list. An omitted limit uses `search.max_results` (normally
   10), which also caps larger requests; no request exceeds 50. It returns ranked
   titles, URLs, and snippets, plus each engine's status, distinguishing
   successful empty results from failures and timeouts.
-- **`web_fetch`** takes one to ten URLs and reads HTML, plain text (including
+- **`fetch`** takes one to ten URLs and reads HTML, plain text (including
   JSON, XML and source files) and PDF text layers; images and other binaries are
   refused by type. Machine reads default to `research.read_characters` (6000);
   explicit `full` opts into the whole clean page. `fetch.max_response_bytes`
@@ -75,22 +75,22 @@ for the configuration file location and schema. Ensure its process can find
   read on. A `query` returns the matching passages in reading order (6000
   characters per page unless `max_characters` says otherwise); when nothing
   matches, the opening of the page is returned instead.
-- **`web_research`** takes one to five intents and returns a bounded, cited
+- **`research`** takes one to five intents and returns a bounded, cited
   `Packet`: it fans the intents across the engines, reads the best distinct
   sources (default 5, at most 2 per host), and returns each source's dated
   passages with the engines that surfaced it and a `coverage` report
   (`candidates`, `read`, `failed`, `skipped`). Passage budgets default to 4000
   characters per source and 12000 for the packet, and never exceed 50000 and
-  200000. Use it instead of chaining `web_search` and `web_fetch` when you need
+  200000. Use it instead of chaining `find` and `fetch` when you need
   evidence in one call. It is deterministic and makes no model call.
-- **`web_crawl`** reads a same-origin collection under page, depth, byte, time,
+- **`crawl`** reads a same-origin collection under page, depth, byte, time,
   and politeness limits. Robots rules and optional path scope apply to every
   discovered page. It returns pages, discovered URLs, and explicit failures.
   Machine page text also has per-page and total character budgets. `windows`
   records returned/available characters and a resumable offset for every page;
   a page omitted by the text budget can be read separately from offset zero.
   `full` explicitly opts into full crawled text, still within the byte budget.
-- **`web_map`** discovers the same bounded URL graph without returning page
+- **`map`** discovers the same bounded URL graph without returning page
   bodies. Discovery still requires reading robots, sitemaps, and linked pages;
   it is not a free inventory of an entire website.
 
@@ -149,7 +149,7 @@ configuration, credentials, and fetch policy.
 
 Every surface (CLI, MCP, and HTTP) shares the same input bounds: a query is
 1–512 bytes after trimming, a fetch takes 1–10 URLs of at most 8192 bytes each,
-`web_search` takes 1–5 queries, and `web_research` takes 1–5 queries and clamps
+`find` takes 1–5 queries, and `research` takes 1–5 queries and clamps
 its packet to the ceilings in its options. The HTTP API answers violations with
 `400 {"error": "..."}`.
 

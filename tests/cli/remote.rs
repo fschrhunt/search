@@ -349,7 +349,7 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
         serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"})
     )
     .unwrap();
-    writeln!(stdin, "{}", serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"web_search","arguments":{"queries":["needle"]}}})).unwrap();
+    writeln!(stdin, "{}", serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find","arguments":{"queries":["needle"]}}})).unwrap();
     line.clear();
     stdout.read_line(&mut line).unwrap();
     assert!(line.contains("Remote needle"), "{line}");
@@ -361,7 +361,7 @@ async fn cli_and_stdio_route_all_operations_and_fail_explicitly() {
         },
     )
     .unwrap();
-    writeln!(stdin, "{}", serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"web_fetch","arguments":{"urls":["https://example.invalid"]}}})).unwrap();
+    writeln!(stdin, "{}", serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fetch","arguments":{"urls":["https://example.invalid"]}}})).unwrap();
     line.clear();
     stdout.read_line(&mut line).unwrap();
     assert!(line.contains("no local fallback"), "{line}");
@@ -1286,7 +1286,7 @@ async fn mcp_machine_tools_share_read_defaults_research_scope_and_crawl_policy()
         &fixture.url,
         &profile,
         &session,
-        "web_fetch",
+        "fetch",
         serde_json::json!({"urls":[url]}),
     )
     .await;
@@ -1300,7 +1300,7 @@ async fn mcp_machine_tools_share_read_defaults_research_scope_and_crawl_policy()
         &fixture.url,
         &profile,
         &session,
-        "web_fetch",
+        "fetch",
         serde_json::json!({"urls":[url],"full":true,"links":true}),
     )
     .await;
@@ -1311,7 +1311,7 @@ async fn mcp_machine_tools_share_read_defaults_research_scope_and_crawl_policy()
         &fixture.url,
         &profile,
         &session,
-        "web_search",
+        "find",
         serde_json::json!({"queries":["rust ownership"],"filters":{"language":"en","safe":false}}),
     )
     .await;
@@ -1323,7 +1323,7 @@ async fn mcp_machine_tools_share_read_defaults_research_scope_and_crawl_policy()
     .unwrap();
     assert_eq!(forwarded["language"], "en");
     assert_eq!(forwarded["safe"], false);
-    let evidence = call_mcp(&http,&fixture.url,&profile,&session,"web_research",serde_json::json!({"queries":["rust ownership"],"options":{"session":"mcp-rest-session","sources":2,"total_characters":120}})).await;
+    let evidence = call_mcp(&http,&fixture.url,&profile,&session,"research",serde_json::json!({"queries":["rust ownership"],"options":{"session":"mcp-rest-session","sources":2,"total_characters":120}})).await;
     assert_eq!(evidence["coverage"]["read"], 2);
     assert!(evidence["characters"].as_u64().unwrap() <= 120);
     let repeated = Client::remote(profile.clone())
@@ -1345,7 +1345,7 @@ async fn mcp_machine_tools_share_read_defaults_research_scope_and_crawl_policy()
         &fixture.url,
         &profile,
         &session,
-        "web_crawl",
+        "crawl",
         serde_json::json!({"url":url,"path_prefix":"/docs/"}),
     )
     .await;
@@ -1355,7 +1355,7 @@ async fn mcp_machine_tools_share_read_defaults_research_scope_and_crawl_policy()
         &fixture.url,
         &profile,
         &session,
-        "web_map",
+        "map",
         serde_json::json!({"url":url,"path_prefix":"/docs/"}),
     )
     .await;
