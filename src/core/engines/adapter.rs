@@ -1,4 +1,4 @@
-//! Configured GET and executable engines, with bounded output and opaque errors.
+//! Configured HTTP (GET or JSON POST) and executable engines, with bounded output and opaque errors.
 //!
 //! Both transports map an upstream JSON answer into `Found`: invalid rows are
 //! skipped and counted, but an answer whose every row is invalid is malformed.
@@ -104,7 +104,7 @@ impl Engine for Adapter {
     }
 }
 
-/// Dial only the configured endpoint; requested filters replace static defaults,
+/// Dial only the configured endpoint, by GET or JSON POST; requested filters replace static defaults,
 /// and environment values are whole sensitive headers.
 async fn http(
     name: &str,
@@ -121,30 +121,48 @@ async fn http(
         settings.allow_private_networks,
     )
     .map_err(|_| EngineError::network("engine endpoint refused"))?;
-    {
-        let requested_filters = filters.values();
-        let dynamic = |key: &str| {
-            key == settings.query_param
-                || settings.limit_param.as_deref() == Some(key)
-                || requested_filters.keys().any(|field| {
-                    settings
-                        .filter_params
-                        .get(field)
-                        .is_some_and(|param| param == key)
-                })
-        };
-        let mut values: Vec<(String, String)> = url
-            .query_pairs()
-            .into_owned()
-            .filter(|(key, _)| !settings.params.contains_key(key) && !dynamic(key))
-            .collect();
-        values.extend(
-            settings
-                .params
-                .iter()
-                .filter(|(key, _)| !dynamic(key))
-                .map(|(key, value)| (key.clone(), value.clone())),
-        );
+    let requested_filters = filters.values();
+    let dynamic = |key: &str| {
+        key == settings.query_param
+            || settings.limit_param.as_deref() == Some(key)
+            || requested_filters.keys().any(|field| {
+                settings
+                    .filter_params
+                    .get(field)
+                    .is_some_and(|param| param == key)
+            })
+    };
+    let mut values: Vec<(String, String)> = url
+        .query_pairs()
+        .into_owned()
+        .filter(|(key, _)| !settings.params.contains_key(key) && !dynamic(key))
+        .collect();
+    values.extend(
+        settings
+            .params
+            .iter()
+            .filter(|(key, _)| !dynamic(key))
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+    // A POST carries the request as JSON fields; a GET carries it as URL parameters.
+    let body = settings.body.clone().map(|mut body| {
+        body.insert(settings.query_param.clone(), query.into());
+        if let Some(param) = &settings.limit_param {
+            body.insert(param.clone(), limit.into());
+        }
+        for (field, filter_values) in &requested_filters {
+            if let Some(param) = settings.filter_params.get(field) {
+                // Domain filters are lists; every other filter is one string.
+                let value = match filter_values.as_slice() {
+                    [one] if !field.ends_with("_domains") => one.clone().into(),
+                    many => many.to_vec().into(),
+                };
+                body.insert(param.clone(), value);
+            }
+        }
+        body
+    });
+    if body.is_none() {
         values.push((settings.query_param.clone(), query.into()));
         if let Some(param) = &settings.limit_param {
             values.push((param.clone(), limit.to_string()));
@@ -158,9 +176,10 @@ async fn http(
                 );
             }
         }
-        url.set_query(None);
-        let mut params = url.query_pairs_mut();
-        params.extend_pairs(&values);
+    }
+    url.set_query(None);
+    if !values.is_empty() {
+        url.query_pairs_mut().extend_pairs(&values);
     }
     let mut headers = reqwest::header::HeaderMap::new();
     for (key, value) in &settings.headers {
@@ -171,20 +190,21 @@ async fn http(
             .map_err(|_| EngineError::rejected("engine credential unavailable"))?;
         insert_header(&mut headers, key, &value, true)?;
     }
-    let mut response = client
-        .get(url.clone())
-        .headers(headers.clone())
-        .send()
+    let send = || {
+        let request = match &body {
+            Some(body) => client.post(url.clone()).json(body),
+            None => client.get(url.clone()),
+        };
+        request.headers(headers.clone()).send()
+    };
+    let mut response = send()
         .await
         .map_err(|_| EngineError::network("engine HTTP request failed"))?;
     if matches!(response.status().as_u16(), 429 | 503) {
         if let Some(delay) = retry_delay(response.headers(), settings.retry_after_max) {
             drop(response);
             tokio::time::sleep(delay).await;
-            response = client
-                .get(url)
-                .headers(headers)
-                .send()
+            response = send()
                 .await
                 .map_err(|_| EngineError::network("engine HTTP request failed"))?;
         }
@@ -766,7 +786,19 @@ print(json.dumps({'results':[]}))
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut bytes = Vec::new();
             let mut buffer = [0; 1024];
-            while !bytes.windows(4).any(|s| s == b"\r\n\r\n") {
+            // Read the head, then any body its Content-Length announces.
+            let complete = |bytes: &[u8]| {
+                let text = String::from_utf8_lossy(bytes).to_lowercase();
+                text.find("\r\n\r\n").is_some_and(|end| {
+                    let length = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    bytes.len() >= end + 4 + length
+                })
+            };
+            while !complete(&bytes) {
                 let size = socket.read(&mut buffer).await.unwrap();
                 if size == 0 {
                     break;
@@ -813,6 +845,47 @@ print(json.dumps({'results':[]}))
         assert_eq!(results[0].title, "Mapped");
         assert_eq!(results[0].snippet.as_deref(), Some("text"));
         assert_eq!(results[0].engines, ["mapped"]);
+    }
+
+    /// A `body` adapter POSTs JSON: constants plus the query, a numeric limit and
+    /// filters as fields, with domain lists kept as arrays and `params` left in the URL.
+    #[tokio::test]
+    async fn http_body_posts_json_fields() {
+        let (url, task) = socket_response(
+            "200 OK",
+            r#"{"results":[{"title":"T","url":"https://example.com/"}]}"#,
+            "",
+        )
+        .await;
+        let mut settings = http_settings(&url);
+        settings.query_param = "query".into();
+        settings.limit_param = Some("numResults".into());
+        settings.params.insert("v".into(), "1".into());
+        settings.body = Some(
+            serde_json::from_str(r#"{"type":"auto","contents":{"highlights":true}}"#).unwrap(),
+        );
+        settings
+            .filter_params
+            .insert("include_domains".into(), "includeDomains".into());
+        let query = Query {
+            text: "a \"b\"".into(),
+            filters: crate::core::service::QueryFilters {
+                include_domains: vec!["example.com".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let adapter = Adapter::new("post".into(), Settings::Http(settings), "search-test").unwrap();
+        let found = adapter.search_query(query, 4).await.unwrap();
+        let request = task.await.unwrap();
+        let (head, body) = request.split_once("\r\n\r\n").unwrap();
+        assert!(head.starts_with("POST /search?v=1 "));
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"type":"auto","contents":{"highlights":true},"query":"a \"b\"","numResults":4,"includeDomains":["example.com"]})
+        );
+        assert_eq!(found.links[0].title, "T");
     }
 
     /// Repeated queries reuse a connection and read credentials after construction.
