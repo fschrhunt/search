@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 · 2026-11-02
 
 - **Stack Exchange questions are readable.** Stack Overflow and its sibling sites
   refuse scripted page reads, so `fetch` reads a question URL through the public
