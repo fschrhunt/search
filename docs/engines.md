@@ -54,8 +54,8 @@ Choose the smallest transport that fits:
 
 | Service | Engine |
 | --- | --- |
-| GET API returning JSON | An `http` adapter with field mappings, as below |
-| JSON POST, signed requests, AI APIs, or custom parsing | A `command` program; start with the [JSON POST example](examples/json-post) |
+| GET or JSON POST API returning JSON | An `http` adapter with field mappings, as below |
+| Signed requests or custom parsing | A `command` program; start with the [JSON POST example](examples/json-post) |
 
 For a GET API, add an entry under `engines.config`:
 
@@ -85,7 +85,25 @@ search test company "rust async"
 search enable company
 ```
 
-For POST APIs, copy the [example directory](examples/json-post) somewhere
+For a JSON POST API, add a `body`: the request becomes a POST of that object, with
+the query and limit added as the fields `query_param` and `limit_param` name. For
+example, [Exa](https://exa.ai/docs/reference/search) with its key in `EXA_API_KEY`:
+
+```json
+"exa": {
+  "type": "http",
+  "url": "https://api.exa.ai/search",
+  "body": { "type": "auto", "contents": { "highlights": true } },
+  "query_param": "query",
+  "limit_param": "numResults",
+  "filter_params": { "include_domains": "includeDomains", "exclude_domains": "excludeDomains" },
+  "header_env": { "x-api-key": "EXA_API_KEY" },
+  "snippets_pointer": "/highlights",
+  "published_pointer": "/publishedDate"
+}
+```
+
+For signed requests or custom parsing, copy the [example directory](examples/json-post) somewhere
 permanent, adapt `engine.py` for your service, and merge its
 [`settings.json`](examples/json-post/settings.json) entry into your settings with
 `cwd` set to that directory:
@@ -144,8 +162,8 @@ change that switch.
 
 ### JSON HTTP adapters
 
-HTTP adapters issue GET requests. Query text is encoded as data, never interpolated
-into commands or URL templates.
+HTTP adapters issue GET requests, or a JSON POST when `body` is set. Query text is
+encoded as data, never interpolated into commands, URL templates or JSON text.
 
 | Adapter field | Meaning / default |
 | --- | --- |
@@ -153,6 +171,7 @@ into commands or URL templates.
 | `query_param` | Query parameter name; `q` |
 | `limit_param` | Optional count parameter, distinct from `query_param` |
 | `params` | Constant query parameters; `{}` |
+| `body` | Constant JSON object; when set, POST it with the query (string), limit (number) and mapped filters as top-level fields; domain filters are arrays. `params` stay in the URL |
 | `filter_params` | Filter field names mapped to HTTP query-parameter names; `{}`; lists become repeated parameters |
 | `retry_after_max` | Maximum permitted Retry-After wait for one 429/503 retry; 1000 ms; zero disables retries, longer delays skip the retry rather than retry early |
 | `results_pointer` | Result array; `/results`; `""` selects a top-level array |

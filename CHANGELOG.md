@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **HTTP engines can POST JSON.** An `http` adapter with a `body` object sends it as a
+  JSON POST, adding the query, limit and filters as fields. AI search APIs such as Exa
+  need only settings now, not a command program.
+
 ## v0.2.0 · 2026-11-02
 
 - **Stack Exchange questions are readable.** Stack Overflow and its sibling sites

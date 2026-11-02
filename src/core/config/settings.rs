@@ -138,7 +138,7 @@ pub enum Adapter {
     Command(Command),
 }
 
-/// GET-only JSON search, with independent private-network permission.
+/// JSON search by GET, or by POST when `body` is set, with independent private-network permission.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Http {
@@ -149,6 +149,11 @@ pub struct Http {
     pub limit_param: Option<String>,
     #[serde(default)]
     pub params: BTreeMap<String, String>,
+    /// A constant JSON object. When set, the request is a POST of this object with the
+    /// query, limit and filters added as top-level fields named by `query_param`,
+    /// `limit_param` and `filter_params`; `params` stay in the URL.
+    #[serde(default)]
+    pub body: Option<serde_json::Map<String, serde_json::Value>>,
     /// Filter field to query parameter; lists become repeated parameters.
     #[serde(default)]
     pub filter_params: BTreeMap<String, String>,
