@@ -182,7 +182,6 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
         Some("version") | Some("--version") | Some("-version") => Ok(Command::Version),
         Some("help") | Some("--help") | Some("-h") => Ok(Command::Help),
         Some(flag) if flag.starts_with('-') && flag != "--" => parse_search(args),
-        // Anything else is a search query.
         Some(_) => parse_search(args),
     }
 }
@@ -903,9 +902,7 @@ mod tests {
 
     #[test]
     fn a_search_without_words_is_an_error() {
-        // A recognized verb with flags but no query is a mistake.
         assert!(parse(args(&["fetch"])).is_err());
-        // A bare query word is a search.
         assert!(matches!(
             parse(args(&["hello"])).unwrap(),
             Command::Search { .. }
