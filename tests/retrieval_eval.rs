@@ -304,3 +304,65 @@ async fn host_diversity_preserves_complementary_evidence() {
     );
     assert!(evidence_text(&diverse).contains(NUTRIENTS));
 }
+
+/// Opt-in pipeline timings, using the same command engine and loopback pages as
+/// the evidence contracts. Run without concurrent builds or tests:
+/// cargo test --offline --locked --release --test retrieval_eval measure_research -- --ignored --nocapture
+/// Cold includes Search construction with empty in-memory caches; warm reuses a
+/// primed Search. Both include discovery, fetch and passage selection, excluding
+/// fixture setup, assertions and teardown. Raw milliseconds are observations,
+/// not thresholds, live-engine quality, CLI/MCP overhead or OS-cold IO.
+#[tokio::test]
+#[ignore = "opt-in local pipeline measurement"]
+async fn measure_research() {
+    let pages = Pages::new().await;
+    let answers = [
+        (
+            TREE_QUERY,
+            vec![
+                pages.url("127.0.0.1", "/cones"),
+                pages.url("127.0.0.1", "/bark"),
+            ],
+        ),
+        (SOIL_QUERY, vec![pages.url("127.0.0.1", "/nutrients")]),
+    ];
+    for warm in [false, true] {
+        let mut service = None;
+        if warm {
+            let primed = search(&answers);
+            primed
+                .research(vec![TREE_QUERY.into(), SOIL_QUERY.into()], options(3))
+                .await;
+            service = Some(primed);
+        }
+        let mut milliseconds = Vec::new();
+        for _ in 0..20 {
+            if !warm {
+                service = None;
+            }
+            let began = std::time::Instant::now();
+            let packet = service
+                .get_or_insert_with(|| search(&answers))
+                .research(vec![TREE_QUERY.into(), SOIL_QUERY.into()], options(3))
+                .await;
+            let elapsed = began.elapsed().as_secs_f64() * 1000.0;
+            let text = evidence_text(&packet);
+            for fact in [CONES, BARK, NUTRIENTS] {
+                assert!(text.contains(fact), "missing fact: {packet:#?}");
+            }
+            assert_eq!(packet.coverage.read, 3, "{packet:#?}");
+            assert!(packet.characters <= 400, "{packet:#?}");
+            milliseconds.push(elapsed);
+        }
+        println!(
+            "{}",
+            json!({
+                "mode": if warm { "warm" } else { "cold" },
+                "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "samples_ms": milliseconds,
+            })
+        );
+    }
+}
