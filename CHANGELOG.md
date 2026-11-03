@@ -4,7 +4,7 @@
 
 - Ignore local agent directories and environment files at any depth, while keeping
   environment examples eligible for tracking.
-- Group Cargo dependency and GitHub Actions updates into one weekly pull request.
+- Propose Cargo dependency and GitHub Actions updates in one weekly pull request.
 
 ## v0.3.0 · 2026-11-02
 
