@@ -144,8 +144,9 @@ dependencies; `mcp` enables optional `rmcp`.
   (`validate_query`, `validate_search`, `validate_urls`). HTTP, MCP and `Client`
   call them; do not repeat the numbers elsewhere. The paired host exposes one REST
   API, which remote `Client`s also use.
-- **Comment modules and functions with their purpose and contract.** Avoid
-  line-by-line comments. Update a comment when the behavior it describes changes.
+- **Document public contracts and non-obvious constraints or reasons.** Omit
+  comments that restate the code. Update a comment when the behavior it describes
+  changes.
 - **One concern per PR.** The branch is `<type>/<slug>`; the title is
   conventional (`fix(search): ...`), because it becomes the squash commit on main.
 - Anything user-visible gets a `CHANGELOG.md` entry under `Unreleased`.

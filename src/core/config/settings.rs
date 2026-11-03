@@ -247,23 +247,18 @@ fn default_adapter_cap() -> u64 {
 fn default_query_param() -> String {
     "q".into()
 }
-/// Locate the array in the response object.
 fn default_results_pointer() -> String {
     "/results".into()
 }
-/// Locate a row's title.
 fn default_title_pointer() -> String {
     "/title".into()
 }
-/// Locate a row's URL.
 fn default_url_pointer() -> String {
     "/url".into()
 }
-/// Locate a row's optional snippet.
 fn default_snippet_pointer() -> String {
     "/snippet".into()
 }
-/// Locate a row's optional publication or last-updated date.
 fn default_published_pointer() -> String {
     "/published".into()
 }
@@ -276,11 +271,9 @@ fn default_command_version() -> u8 {
 fn default_retry_after() -> u64 {
     1000
 }
-/// Ordered upstream passages.
 fn default_snippets_pointer() -> String {
     "/snippets".into()
 }
-/// Last update metadata.
 fn default_updated_pointer() -> String {
     "/updated".into()
 }

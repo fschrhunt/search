@@ -75,6 +75,10 @@ command protocol. See [engines](docs/engines.md) before adding one.
 - Use the pull request template. Explain the problem, what changed, and why it
   works. List the checks you ran and their results.
 
+## Dependency updates
+
+Dependabot proposes grouped Cargo lockfile updates weekly. Security updates are separate.
+
 ## Releasing
 
 See [docs/contributing/releases.md](docs/contributing/releases.md).
