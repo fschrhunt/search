@@ -31,8 +31,8 @@ serde_path_to_error = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "process"] }
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }
-dom_smoothie = "0.18"
-dom_query = "0.28"
+dom_smoothie = "0.19"
+dom_query = "0.29"
 encoding_rs = "0.8"
 pdf-extract = "0.12"
 url = "2"
