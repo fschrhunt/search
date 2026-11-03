@@ -13,23 +13,23 @@ class Search < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/fschrhunt/search/releases/download/v0.2.0/search_v0.2.0_darwin_arm64.tar.gz"
-      sha256 "641f54447eba58b621228a6f511de543542de8aecd05d5bc24005056fefce5af"
+      url "https://github.com/fschrhunt/search/releases/download/v0.3.0/search_v0.3.0_darwin_arm64.tar.gz"
+      sha256 "6498e532568be24eb878b4cd9d915bb0f726d3a43b55ce74a903fbb464561284"
     end
     on_intel do
-      url "https://github.com/fschrhunt/search/releases/download/v0.2.0/search_v0.2.0_darwin_amd64.tar.gz"
-      sha256 "80545d1ad0d0799ef40a6b6633d2be2b1b7548a3ded5746ff8e344cbd8b22e94"
+      url "https://github.com/fschrhunt/search/releases/download/v0.3.0/search_v0.3.0_darwin_amd64.tar.gz"
+      sha256 "073bbf794b3c9037c328ed331ee4127d0069f602104180bc5b0994a35be98f67"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/fschrhunt/search/releases/download/v0.2.0/search_v0.2.0_linux_arm64.tar.gz"
-      sha256 "bc89f12620a6be615fd6516d78081a597170d6290e5699257c96f9cbc71ad83f"
+      url "https://github.com/fschrhunt/search/releases/download/v0.3.0/search_v0.3.0_linux_arm64.tar.gz"
+      sha256 "3902a93f667dbda2a1ac44210d99c5c42d90cbca7703e0a78c105e5eb8c4952c"
     end
     on_intel do
-      url "https://github.com/fschrhunt/search/releases/download/v0.2.0/search_v0.2.0_linux_amd64.tar.gz"
-      sha256 "245cd5d8a6eb4cdb678c6a402f0496561b3d36e34c3904f844c26428c6dcb86e"
+      url "https://github.com/fschrhunt/search/releases/download/v0.3.0/search_v0.3.0_linux_amd64.tar.gz"
+      sha256 "70efb1b60ee26f70188a310a025ddc90a1ff2d82d39bf70dcff32540fe9ce374"
     end
   end
 
@@ -44,6 +44,6 @@ class Search < Formula
   end
 
   test do
-    assert_equal "v0.2.0", shell_output("#{bin}/search version").strip
+    assert_equal "v0.3.0", shell_output("#{bin}/search version").strip
   end
 end
