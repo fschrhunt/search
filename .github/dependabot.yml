@@ -13,6 +13,5 @@ updates:
     directory: /
     patterns: ["*"]
     multi-ecosystem-group: dependencies
-    versioning-strategy: increase-if-necessary
     allow:
       - dependency-type: all
