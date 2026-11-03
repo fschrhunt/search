@@ -1,18 +1,19 @@
 version: 2
-updates:
-  - package-ecosystem: cargo
-    directory: "/"
+multi-ecosystem-groups:
+  dependencies:
     schedule:
       interval: weekly
-      day: monday
-      time: "09:00"
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: dependencies
     open-pull-requests-limit: 1
-    versioning-strategy: lockfile-only
+  - package-ecosystem: cargo
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: dependencies
+    open-pull-requests-limit: 1
+    versioning-strategy: increase-if-necessary
     allow:
       - dependency-type: all
-    groups:
-      cargo:
-        applies-to: version-updates
-        patterns: ["*"]
-    commit-message:
-      prefix: "chore(infra)"

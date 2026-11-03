@@ -4,8 +4,7 @@
 
 - Ignore local agent directories and environment files at any depth, while keeping
   environment examples eligible for tracking.
-- Replace the custom dependency updater with weekly grouped Cargo lockfile
-  Dependabot PRs; security updates remain independent.
+- Group Cargo dependency and GitHub Actions updates into one weekly pull request.
 
 ## v0.3.0 · 2026-11-02
 

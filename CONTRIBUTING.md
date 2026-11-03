@@ -77,7 +77,7 @@ command protocol. See [engines](docs/engines.md) before adding one.
 
 ## Dependency updates
 
-Dependabot proposes grouped Cargo lockfile updates weekly. Security updates are separate.
+Dependabot groups dependency and GitHub Actions updates into one weekly pull request. Review changes and required checks before merging.
 
 ## Releasing
 
