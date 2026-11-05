@@ -10,8 +10,8 @@ up-to-date main checkout. Choose an unused version with nonempty `Unreleased`
 notes:
 
 ```sh
-scripts/release.sh v0.2.0    # opens a PR naming CHANGELOG.md's Unreleased section v0.2.0
-scripts/release.sh v0.2.0    # after merging it: checks CI and dispatches the Actions workflow
+.github/release/release.sh v0.2.0    # opens a PR naming CHANGELOG.md's Unreleased section v0.2.0
+.github/release/release.sh v0.2.0    # after merging it: checks CI and dispatches the Actions workflow
 ```
 
 The dispatch must run from `main`; Actions verifies the version, changelog entry,
@@ -31,7 +31,7 @@ and passing CI, then creates the tag and starts the release workflow.
    Builds target the root package with the default `cli` feature. Root `build.rs`
    stamps release identity; binary upgrades do not rewrite settings or private
    trust files.
-4. **formula**: regenerates `search.rb` (`scripts/formula.sh`) for the release and
+4. **formula**: regenerates `search.rb` (`.github/release/formula.sh`) for the release and
    opens a release PR against main. Review and merge after required checks pass;
    automation never merges the PR.
 5. **install**: a real installer run on all six native runners: `install.sh` for
@@ -39,6 +39,23 @@ and passing CI, then creates the tag and starts the release workflow.
    smoke checks.
 
 Both `formula` and `install` depend on `release` and may run in parallel.
+
+Release helpers and their tests live in `.github/release/`; general developer
+checks remain available through `./x`. Default-branch CI and the release build
+use the same `package.sh` (Unix) and `package.ps1` (Windows) to archive native
+binaries. Each helper extracts its archive and verifies the binary and `LICENSE`
+before the release workflow uploads it. The offline Windows installer tests also
+use `package.ps1`. Archive names, members, checksums and publication steps remain
+the same.
+
+From the repository root, packaging an existing Unix build without publishing:
+
+```sh
+.github/release/package.sh v0.0.0 darwin arm64 target/release/search /tmp/search-release
+```
+
+Choose the platform and architecture matching the binary. On Windows, use
+`.github/release/package.ps1 -Tag v0.0.0 -Arch amd64 -Binary target/release/search.exe -OutputDirectory dist`.
 
 ## Where people get it
 

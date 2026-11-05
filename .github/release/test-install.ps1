@@ -12,16 +12,12 @@ $oldReleases = $env:SEARCH_RELEASES
 $server = $null
 New-Item -ItemType Directory -Path $root | Out-Null
 try {
-    $package = Join-Path $root 'package'
     $release = Join-Path $root "download/$Version"
-    New-Item -ItemType Directory -Path $package, $release -Force | Out-Null
-    Copy-Item -LiteralPath $Binary -Destination (Join-Path $package 'search.exe')
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../LICENSE') -Destination $package
     $architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
     $arch = if ($architecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
     $archiveName = "search_${Version}_windows_${arch}.zip"
     $archive = Join-Path $release $archiveName
-    Compress-Archive -Path "$package/search.exe", "$package/LICENSE" -DestinationPath $archive
+    & "$PSScriptRoot/package.ps1" -Tag $Version -Arch $arch -Binary $Binary -OutputDirectory $release
     $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
     $checksums = Join-Path $release 'checksums.txt'
     "$hash  $archiveName" | Set-Content -LiteralPath $checksums -Encoding ASCII
@@ -42,7 +38,7 @@ try {
     }
     if (-not $ready) { throw 'Local installer fixture did not start' }
 
-    $installer = Join-Path $PSScriptRoot '../install.ps1'
+    $installer = Join-Path $PSScriptRoot '../../install.ps1'
     $destination = Join-Path $root 'installed'
     & $installer -Version $Version -Dir $destination
     & $installer -Version $Version -Dir $destination
