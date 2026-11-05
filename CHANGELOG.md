@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `find` now says to prefer live search over model memory for current or verifiable
+  information, and its server instructions say the same at session start.
+- `find` bounds each snippet to 400 characters by default, via the new
+  `max_snippet_characters` argument (at most 2000), so a batched search stays inside an
+  agent's context; `fetch` still reads the full page.
 - Ignore local agent directories and environment files at any depth, while keeping
   environment examples eligible for tracking.
 - Propose Cargo dependency and GitHub Actions updates in one weekly pull request.
