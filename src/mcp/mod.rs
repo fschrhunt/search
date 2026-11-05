@@ -126,6 +126,10 @@ pub struct SearchArgs {
     /// Restrict to selected engine IDs, such as "mwmbl" or "searxng".
     #[serde(default)]
     pub engines: Option<Vec<String>>,
+    /// Characters kept from each snippet, at most 2000. Omitted keeps 400.
+    /// Full passages remain available through fetch.
+    #[serde(default)]
+    pub max_snippet_characters: Option<usize>,
 }
 
 /// Arguments for `fetch`.
@@ -263,7 +267,7 @@ impl Server {
 
     #[tool(
         name = "find",
-        description = "Search the live web using the selected engines. Returns ranked titles, URLs, snippets, and engine status. Read relevant pages with fetch; use fetch directly when you already have a URL."
+        description = "Search the live web. Use this instead of answering from memory for anything current, versioned, or verifiable: releases, versions, APIs, docs, prices, news, people. Returns ranked results per query (title, URL, snippet, publication date when an engine provides one) with the engines that answered. Read a result with fetch, or use research for cited passages from several sources."
     )]
     async fn find(
         &self,
@@ -271,11 +275,20 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let queries = validate_queries(args.queries)
             .map_err(|message| McpError::invalid_params(message, None))?;
+        if args.max_snippet_characters == Some(0) {
+            return Err(invalid_params(
+                "max_snippet_characters must be at least 1".into(),
+            ));
+        }
+        let max_snippet = args
+            .max_snippet_characters
+            .unwrap_or(DEFAULT_SNIPPET_CHARACTERS)
+            .min(MAX_SNIPPET_CHARACTERS);
         // Zero asks for the host maximum; the client caps explicit limits.
         let limit = args.limit.unwrap_or(0);
         let engines = args.engines.unwrap_or_default();
         let filters = validate_filters(args.filters.into()).map_err(invalid_params)?;
-        let responses = futures::future::join_all(queries.into_iter().map(|text| {
+        let mut responses = futures::future::join_all(queries.into_iter().map(|text| {
             self.search.search(Query {
                 text,
                 limit,
@@ -287,6 +300,16 @@ impl Server {
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
         .map_err(client_error)?;
+        for answer in &mut responses {
+            for link in &mut answer.results {
+                if let Some(snippet) = link.snippet.as_mut() {
+                    clip_snippet(snippet, max_snippet);
+                }
+                for snippet in &mut link.snippets {
+                    clip_snippet(snippet, max_snippet);
+                }
+            }
+        }
         json_result(SearchOutput { queries: responses })
     }
 
@@ -413,11 +436,11 @@ impl ServerHandler for Server {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("search", crate::VERSION))
             .with_instructions(
-                "Search the live web and read pages. Use find to discover sources, \
-                 fetch to read the ones that matter, and research to gather a \
-                 bounded, cited packet of evidence for a question in one call. Results \
-                 report which engines answered, so an empty answer is never mistaken for \
-                 a broken one.",
+                "Search the live web and read pages. Prefer find over your own knowledge \
+                 when a question depends on current, versioned, or verifiable information. \
+                 Use fetch to read a source, and research to gather a bounded, cited packet \
+                 from several sources. Results report which engines answered, so an empty \
+                 answer is never mistaken for a broken one.",
             )
     }
 }
@@ -430,6 +453,24 @@ fn invalid_params(message: String) -> McpError {
 /// Surface routing failures as MCP errors without substituting local answers.
 fn client_error(message: String) -> McpError {
     McpError::internal_error(message, None)
+}
+
+/// Snippet budgets keep a batched search inside an agent's context; fetch reads a full page.
+const DEFAULT_SNIPPET_CHARACTERS: usize = 400;
+const MAX_SNIPPET_CHARACTERS: usize = 2000;
+
+/// Keep at most max characters of a snippet on a character boundary, marking the cut.
+fn clip_snippet(text: &mut String, max: usize) {
+    if text.chars().count() <= max {
+        return;
+    }
+    let cut = text
+        .char_indices()
+        .nth(max)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len());
+    text.truncate(cut);
+    text.push('\u{2026}');
 }
 
 /// Return both structured JSON and readable JSON text for MCP clients.
@@ -510,6 +551,21 @@ mod tests {
         );
         host.await??;
         Ok(())
+    }
+
+    #[test]
+    fn snippets_are_clipped_on_character_boundaries() {
+        let mut ascii = "abcdefghij".to_string();
+        clip_snippet(&mut ascii, 4);
+        assert_eq!(ascii, "abcd\u{2026}");
+
+        let mut wide = "héllo wörld".to_string();
+        clip_snippet(&mut wide, 2);
+        assert_eq!(wide, "hé\u{2026}");
+
+        let mut short = "ok".to_string();
+        clip_snippet(&mut short, 4);
+        assert_eq!(short, "ok");
     }
 
     #[test]
