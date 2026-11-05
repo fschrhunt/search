@@ -105,7 +105,25 @@ jobs:
         if: runner.os == 'Windows' && github.event_name == 'push'
         env:
           TRIPLE: ${{ matrix.triple }}
-        run: python scripts/check-windows-imports.py "target/$TRIPLE/release/search.exe"
+        run: ./x windows-imports "target/$TRIPLE/release/search.exe"
+      - name: Verify Unix release archive
+        if: runner.os != 'Windows' && github.event_name == 'push'
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          platform=linux
+          [ "$RUNNER_OS" != macOS ] || platform=darwin
+          arch=amd64
+          case "$TRIPLE" in aarch64-*) arch=arm64 ;; esac
+          .github/release/package.sh v0.0.0 "$platform" "$arch" "target/$TRIPLE/release/search" "$RUNNER_TEMP/search-release"
+      - name: Verify Windows release archive
+        if: runner.os == 'Windows' && github.event_name == 'push'
+        shell: pwsh
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          $arch = if ($env:TRIPLE.StartsWith('aarch64-')) { 'arm64' } else { 'amd64' }
+          ./.github/release/package.ps1 -Tag v0.0.0 -Arch $arch -Binary "target/$env:TRIPLE/release/search.exe" -OutputDirectory "$env:RUNNER_TEMP/search-release"
       - name: Check Windows installer syntax and behavior
         if: runner.os == 'Windows' && (github.event_name == 'push' || matrix.pr)
         shell: pwsh
@@ -115,8 +133,8 @@ jobs:
         run: |
           cargo build --locked --bin search
           if ($LASTEXITCODE -ne 0) { throw 'Installer fixture build failed' }
-          ./scripts/test-install.ps1 -Binary target/debug/search.exe -Version v0.0.0
+          ./.github/release/test-install.ps1 -Binary target/debug/search.exe -Version v0.0.0
       - name: Check the installer with Windows PowerShell 5.1
         if: runner.os == 'Windows' && (github.event_name == 'push' || matrix.pr)
         shell: powershell
-        run: ./scripts/test-install.ps1 -Binary target/debug/search.exe -Version v0.0.0
+        run: ./.github/release/test-install.ps1 -Binary target/debug/search.exe -Version v0.0.0

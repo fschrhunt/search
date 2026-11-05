@@ -22,8 +22,9 @@ not need Python at runtime.
 - `cargo check --locked --no-default-features` and
   `cargo check --locked --no-default-features --features mcp` — minimal and MCP-only builds
 - `./x test` — the package tests
-- `./x shell` — syntax checks for `x`, `install.sh`, and `scripts/*.sh`
+- `./x shell` — syntax checks for `x`, `install.sh`, `scripts/*.sh`, and `.github/release/*.sh`
 - `./x guard` — `scripts/guard.sh`, the security-surface audit
+- Python release tests under `.github/release/`, including formula retry and credential boundaries
 
 CI runs `./x check` natively on Linux, macOS, and Windows, each on x86_64 and ARM64.
 Tests use local fixtures and mock servers, not live engine queries. Unix CI
@@ -36,6 +37,8 @@ and Git Bash for `./x`. Run `cargo build --locked` directly from PowerShell for
 a normal build. CI also tests the PowerShell installer against local release
 fixtures, including update and checksum failure. Windows ARM64 CI uses GitHub's
 native ARM runner; no local Windows device is needed to contribute.
+`./x windows-imports BINARY` checks a Windows release binary for external C runtime
+dependencies. CI uses the same command after its native release build.
 
 `./x` defaults to `check` and does not rewrite source files or lockfiles.
 `./x help` lists commands. Build, fmt, lint, and test forward Cargo arguments;

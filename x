@@ -16,6 +16,7 @@ Usage: ./x COMMAND [args...]
   check   format check, lint, tests, shell syntax, and security guard (default)
   shell   check shell-script syntax
   guard   audit the security surface
+  windows-imports BINARY  check a Windows binary for C runtime dependencies
   eval    score labeled retrieval (--packets for replay, --binary for live)
   serve   build and run paired HTTPS hosting
   stdio   build and run MCP over stdio
@@ -58,7 +59,7 @@ case "$command" in
         PYTHONDONTWRITEBYTECODE=1 python3 tests/evaluate.py
         ./x shell
         ./x guard
-        python3 -m unittest discover -s scripts -p "test_*.py"
+        PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .github/release -p "test_*.py"
         ;;
     guard)
         [ "$#" -eq 0 ] || usage >&2
@@ -67,11 +68,14 @@ case "$command" in
     eval)
         PYTHONDONTWRITEBYTECODE=1 exec python3 scripts/evaluate.py "$@"
         ;;
-    # The shell scripts the release runs: a syntax error here fails a release,
-    # not a pull request, so it belongs in check.
+    windows-imports)
+        [ "$#" -eq 1 ] || usage >&2
+        exec python3 .github/release/check-windows-imports.py "$@"
+        ;;
+    # Check release tooling alongside developer scripts before a tag is cut.
     shell)
         [ "$#" -eq 0 ] || usage >&2
-        for script in x install.sh scripts/*.sh; do
+        for script in x install.sh scripts/*.sh .github/release/*.sh; do
             sh -n "$script"
         done
         echo "shell: ok"

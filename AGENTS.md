@@ -61,8 +61,8 @@ src/cli/       CLI and paired HTTPS host
 tests/        integration tests and fixtures under cli/ and engines/
 docs/examples/json-post/  custom command engine starter and its settings entry
 scripts/guard.sh  security-surface audit: hosts, panic sites, SSRF and auth
-scripts/release.sh · scripts/formula.sh · install.sh · install.ps1  release tooling
-scripts/test-install.ps1  offline Windows installer contract
+.github/release/  release preparation, archive packaging, formula helpers and release tests
+install.sh · install.ps1  public release installers
 docs/          user pages and docs/contributing/ for contributors
 x              repository entry point
 ```
