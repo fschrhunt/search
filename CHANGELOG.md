@@ -1,5 +1,8 @@
 # Changelog
 
+Written by each release, newest first; the same notes are on
+[GitHub Releases](https://github.com/fschrhunt/search/releases).
+
 ## Unreleased
 
 - `find` now says to prefer live search over model memory for current or verifiable

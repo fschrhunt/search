@@ -149,4 +149,4 @@ dependencies; `mcp` enables optional `rmcp`.
   changes.
 - **One concern per PR.** The branch is `<type>/<slug>`; the title is
   conventional (`fix(search): ...`), because it becomes the squash commit on main.
-- Anything user-visible gets a `CHANGELOG.md` entry under `Unreleased`.
+- Never edit `CHANGELOG.md` by hand; releases write it from the notes reviewed at release time.

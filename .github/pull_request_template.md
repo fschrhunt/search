@@ -8,5 +8,5 @@
 
 <!-- Covers Rust formatting, Clippy, feature builds, package tests, shell syntax,
      and the guard. Add focused test commands/results; state failures, skips, or
-     limitations. Update affected docs and CHANGELOG.md for user-visible changes.
+     limitations. Update affected docs for user-visible changes.
      Engine changes must preserve command protocol 1. -->

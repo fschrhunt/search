@@ -51,7 +51,6 @@ and `guard` reject extra arguments.
 - **One concern per pull request.** If the description says "also", split it.
 - **A test for each behavior change.** The regression test should fail against
   the unfixed code, for the reason the fix names.
-- **A `CHANGELOG.md` entry** under `Unreleased` for anything user-visible.
 - **Updated docs and comments.** A stale comment is worse than none.
 
 `scripts/guard.sh` pins promises Search makes — the network hosts it may reach,
