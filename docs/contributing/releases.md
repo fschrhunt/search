@@ -1,27 +1,31 @@
 # Releases
 
-A release is a `v*` tag on main. The release workflow creates the tag after a
-manual dispatch, then the tag push starts the build and publication jobs.
+A release is a `v*` tag on a release commit: one commit on top of main that adds
+the release's notes to `CHANGELOG.md`. The release workflow writes that commit
+and the tag after a manual dispatch, then the tag push starts the build and
+publication jobs. `CHANGELOG.md` is never edited by hand.
 
 ## Cutting one
 
 With Git and the authenticated GitHub CLI (`gh`) installed, use a clean,
-up-to-date main checkout. Choose an unused version with nonempty `Unreleased`
-notes:
+up-to-date main checkout, and choose an unused version:
 
 ```sh
-.github/release/release.sh v0.2.0    # opens a PR naming CHANGELOG.md's Unreleased section v0.2.0
-.github/release/release.sh v0.2.0    # after merging it: checks CI and dispatches the Actions workflow
+.github/release/release.sh v0.2.0
 ```
 
-The dispatch must run from `main`; Actions verifies the version, changelog entry,
-and passing CI, then creates the tag and starts the release workflow.
+It checks CI, drafts the notes from the pull requests merged since the last
+release, and opens them in your editor; what you save is published. The dispatch
+must run from `main`; Actions verifies the version and passing CI, adds the notes
+to `CHANGELOG.md` in a release commit, tags it, and opens a `release/v0.2.0`
+pull request that brings the changelog to main. Merge it after CI passes.
 
 ## What the tag runs
 
 `.github/workflows/release.yml` runs:
 
-1. **check**: the tag is on main and `CHANGELOG.md` has its section.
+1. **check**: the tag is a release commit on top of main that only changes
+   `CHANGELOG.md`, which has its section.
 2. **build**: `./x check` and release compilation on six native runners: Linux,
    macOS, and Windows, each on arm64 and amd64. Unix binaries use `.tar.gz`;
    Windows binaries use `.zip`. No Apple SDK or Windows linker is expected on
